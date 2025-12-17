@@ -31,7 +31,7 @@
     "react-dom": "^19.2.3"
   },
   "build": {
-    "appId": "com.screenrecorder.app",
+    "appId": "com.capframe.app",
     "productName": "Capframe",
     "files": [
       "dist/**/*",
