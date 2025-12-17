@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body,
+        html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: rgba(0, 0, 0, 0.3);
+            /* Dimmed background */
+            cursor: crosshair;
+            user-select: none;
+        }
+
+        #selection-box {
+            position: absolute;
+            border: 2px solid #3b82f6;
+            /* Blue-500 */
+            background: rgba(59, 130, 246, 0.2);
+            pointer-events: none;
+            display: none;
+        }
+
+        .info {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: white;
+            font-family: sans-serif;
+            font-size: 14px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 8px 16px;
+            border-radius: 20px;
+            pointer-events: none;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="info">Click and drag to select area. Press ESC to cancel.</div>
+    <div id="selection-box"></div>
+    <script>
+        const { ipcRenderer } = require('electron');
+
+        let startX, startY, endX, endY;
+        let isSelecting = false;
+        const box = document.getElementById('selection-box');
+
+        window.addEventListener('mousedown', (e) => {
+            isSelecting = true;
+            startX = e.screenX; // Using screen coordinates for global positioning
+            startY = e.screenY;
+
+            // Visual feedback relative to window
+            const clientX = e.clientX;
+            const clientY = e.clientY;
+
+            box.style.left = clientX + 'px';
+            box.style.top = clientY + 'px';
+            box.style.width = '0px';
+            box.style.height = '0px';
+            box.style.display = 'block';
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (!isSelecting) return;
+
+            const currentX = e.screenX;
+            const currentY = e.screenY;
+
+            // Calculate dims
+            const width = Math.abs(currentX - startX);
+            const height = Math.abs(currentY - startY);
+            const left = Math.min(startX, currentX);
+            const top = Math.min(startY, currentY);
+
+            // Update visual box (convert back to client relative for CSS)
+            // Assuming the window is fullscreen covering the screen, screenX approx equals clientX + offset
+            // But if window is fullscreen, clientX == screenX (mostly).
+            // Let's rely on client coords for drawing.
+
+            const cX = e.clientX;
+            const cY = e.clientY;
+            const startCX = startX - (e.screenX - e.clientX); // approximating start client X
+            const startCY = startY - (e.screenY - e.clientY);
+
+            // Easier: just track client coords for drawing, screen coords for result
+
+        });
+
+        // Re-implementing simplified drag logic purely on client coords for drawing
+        let startClientX, startClientY;
+
+        window.addEventListener('mousedown', (e) => {
+            startClientX = e.clientX;
+            startClientY = e.clientY;
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (!isSelecting) return;
+            const w = Math.abs(e.clientX - startClientX);
+            const h = Math.abs(e.clientY - startClientY);
+            const l = Math.min(e.clientX, startClientX);
+            const t = Math.min(e.clientY, startClientY);
+
+            box.style.width = w + 'px';
+            box.style.height = h + 'px';
+            box.style.left = l + 'px';
+            box.style.top = t + 'px';
+        });
+
+        window.addEventListener('mouseup', (e) => {
+            if (!isSelecting) return;
+            isSelecting = false;
+
+            // Calculate final screen coordinates
+            // We assume the window is at 0,0 of the display usually? 
+            // If strictly ensuring bounds:
+            const width = parseInt(box.style.width);
+            const height = parseInt(box.style.height);
+
+            if (width < 10 || height < 10) {
+                // Too small, ignore
+                box.style.display = 'none';
+                return;
+            }
+
+            // Get window bounds to offset client coords to screen coords
+            // ipcRenderer.invoke('get-window-bounds')... or just assume screenX matches if full screen
+            // Actually e.screenX is reliable.
+
+            const finalEndScreenX = e.screenX;
+            const finalEndScreenY = e.screenY;
+
+            // Bounds
+            const x = Math.min(startX, finalEndScreenX);
+            const y = Math.min(startY, finalEndScreenY);
+            const w = Math.abs(finalEndScreenX - startX);
+            const h = Math.abs(finalEndScreenY - startY);
+
+            ipcRenderer.send('AREA_SELECTED', { x, y, width: w, height: h });
+        });
+
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                ipcRenderer.send('AREA_SELECTED', null); // Cancel
+            }
+        });
+    </script>
+</body>
+
+</html>

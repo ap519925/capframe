@@ -1,0 +1,67 @@
+{
+  "name": "capframe",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "main": "electron-main.js",
+  "author": "User",
+  "description": "Capful - Smart Screen Recording",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "start:electron": "concurrently -k \"npm run dev\" \"wait-on tcp:5173 && electron .\"",
+    "dist": "npm run build && electron-builder"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.1.18",
+    "@vitejs/plugin-react": "^5.1.2",
+    "autoprefixer": "^10.4.23",
+    "concurrently": "^9.2.1",
+    "electron": "^39.2.7",
+    "electron-builder": "^25.1.8",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^4.1.18",
+    "vite": "^7.2.4",
+    "wait-on": "^9.0.3"
+  },
+  "dependencies": {
+    "lucide-react": "^0.561.0",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3"
+  },
+  "build": {
+    "appId": "com.screenrecorder.app",
+    "productName": "Capframe",
+    "files": [
+      "dist/**/*",
+      "electron-main.js",
+      "preload.js",
+      "selection.html",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "appx"
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "appx": {
+      "applicationId": "Capframe",
+      "identityName": "INSERT-YOUR-IDENTITY-NAME-HERE",
+      "publisher": "CN=INSERT-YOUR-PUBLISHER-ID-HERE",
+      "publisherDisplayName": "Your Name"
+    }
+  }
+}
