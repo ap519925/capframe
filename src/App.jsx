@@ -79,13 +79,8 @@ function App() {
     };
 
     const handleSmartTrim = async () => {
-        setIsTrimming(true);
-        setTrimMessage(null);
-        // Simulate processing
-        setTimeout(() => {
-            setIsTrimming(false);
-            setTrimMessage("✨ Automatically removed 4.2s of silence and static footage.");
-        }, 2500);
+        // Placeholder: Real implementation requires ffmpeg.wasm
+        alert("Smart Trim is currently in development. Please use an external editor.");
     };
 
     const createCroppedStream = (originalStream, rect) => {
@@ -173,7 +168,8 @@ function App() {
                     mandatory: {
                         chromeMediaSource: 'desktop',
                         chromeMediaSourceId: screenSource.id,
-                        maxWidth: 4000, maxHeight: 4000
+                        maxWidth: 4000, maxHeight: 4000,
+                        minFrameRate: 60, maxFrameRate: 60
                     }
                 };
             } else {
@@ -182,7 +178,7 @@ function App() {
                         chromeMediaSource: 'desktop',
                         chromeMediaSourceId: sourceToUse.id,
                         maxWidth: 3840, maxHeight: 2160,
-                        minFrameRate: 30, maxFrameRate: 60
+                        minFrameRate: 60, maxFrameRate: 60
                     }
                 };
             }
@@ -248,7 +244,10 @@ function App() {
 
             setStream(finalStream);
 
-            const options = { mimeType: 'video/webm; codecs=vp9' };
+            const options = {
+                mimeType: 'video/webm; codecs=vp9',
+                videoBitsPerSecond: 25000000 // 25 Mbps
+            };
             const mediaRecorder = new MediaRecorder(finalStream, options);
             mediaRecorderRef.current = mediaRecorder;
 
@@ -700,6 +699,7 @@ function App() {
                                         <Sparkles className="w-4 h-4" /> AI Operations
                                     </h3>
                                     <div className="flex gap-2">
+                                        {/* Smart Trim Button Hidden until real implementation ready 
                                         {!isTrimming && !trimMessage && (
                                             <button
                                                 onClick={handleSmartTrim}
@@ -708,6 +708,7 @@ function App() {
                                                 <Crop className="w-3 h-3" /> Smart Trim
                                             </button>
                                         )}
+                                        */}
                                         {!aiAnalysis && !isAnalyzing && (
                                             <button
                                                 onClick={handleAnalyzeAI}
