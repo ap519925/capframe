@@ -243,7 +243,7 @@ function App() {
                 mediaRecorder.start(1000);
                 setReplayBufferActive(true);
                 // In replay mode, show "Ready" or buffer time on overlay
-                if (window.electronAPI && window.electronAPI.updateOverlayTime) window.electronAPI.updateOverlayTime('Buffer');
+                if (window.electronAPI && window.electronAPI.updateOverlayTime) window.electronAPI.updateOverlayTime('Flashback');
             } else {
                 // Standard Recording Logic
                 mediaRecorder.ondataavailable = (event) => {
@@ -498,7 +498,7 @@ function App() {
                                         onClick={() => setIsReplayMode(true)}
                                         className={`px-3 py-1 text-xs font-bold rounded-md transition-all flex items-center gap-1 ${isReplayMode ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:text-slate-300'}`}
                                     >
-                                        <Rewind className="w-3 h-3" /> Replay Buffer
+                                        <Rewind className="w-3 h-3" /> Flashback
                                     </button>
                                 </div>
                             )}
@@ -506,7 +506,7 @@ function App() {
                             {isReplayMode ? (
                                 <div className="min-h-[80px] flex flex-col items-center justify-center gap-2">
                                     <div className={`text-xl font-medium tracking-wide ${replayBufferActive ? 'text-indigo-400' : 'text-slate-500'}`}>
-                                        {replayBufferActive ? 'Buffer Active' : 'Buffer Ready'}
+                                        {replayBufferActive ? 'Flashback Active' : 'Flashback Ready'}
                                     </div>
                                     <div className="flex items-center gap-2">
                                         {[30, 60, 90, 180].map(dur => (
@@ -716,7 +716,7 @@ function App() {
                                         } text-white`}
                                 >
                                     <Square className="w-5 h-5 fill-current" />
-                                    {isReplayMode ? 'Stop Buffer' : 'Stop Recording'}
+                                    {isReplayMode ? 'Stop Flashback' : 'Stop Recording'}
                                 </button>
                             ) : previewUrl ? (
                                 <div className="flex gap-4">
@@ -744,7 +744,7 @@ function App() {
                                     disabled={!selectedSource}
                                 >
                                     <div className={`w-3 h-3 rounded-full ${selectedSource ? 'bg-red-500 animate-pulse' : 'bg-slate-500'}`} />
-                                    {isReplayMode ? 'Start Buffer' : 'Start Recording'}
+                                    {isReplayMode ? 'Start Flashback' : 'Start Recording'}
                                 </button>
                             )}
                         </div>
