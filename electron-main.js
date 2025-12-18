@@ -99,6 +99,12 @@ app.whenReady().then(() => {
     }
   });
 
+  globalShortcut.register('Alt+Shift+S', () => {
+    if (mainWindow) {
+      mainWindow.webContents.send('HOTKEY_SAVE_REPLAY');
+    }
+  });
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
@@ -114,6 +120,66 @@ app.whenReady().then(() => {
     await shell.openExternal(url);
   });
 });
+
+let overlayWindow;
+
+function createOverlayWindow() {
+  if (overlayWindow) return;
+
+  const { width } = screen.getPrimaryDisplay().workAreaSize;
+
+  overlayWindow = new BrowserWindow({
+    width: 180,
+    height: 60,
+    x: width - 200, // Bottom right default
+    y: screen.getPrimaryDisplay().workAreaSize.height - 100,
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    resizable: false,
+    skipTaskbar: true,
+    focusable: false, // Don't take focus
+    webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: false
+    },
+    show: false
+  });
+
+  overlayWindow.loadFile(path.join(__dirname, 'overlay.html'));
+  overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  // overlayWindow.setIgnoreMouseEvents(true, { forward: true }); // Need interaction for buttons, so false
+}
+
+// IPC Handlers for Overlay
+ipcMain.on('SHOW_OVERLAY', (event, { mode }) => {
+  if (!overlayWindow) createOverlayWindow();
+  overlayWindow.show();
+  overlayWindow.webContents.send('UPDATE_OVERLAY', { type: 'mode', mode, status: 'active' });
+});
+
+ipcMain.on('HIDE_OVERLAY', () => {
+  if (overlayWindow) overlayWindow.hide();
+});
+
+ipcMain.on('UPDATE_OVERLAY_TIME', (event, timeString) => {
+  if (overlayWindow && overlayWindow.isVisible()) {
+    overlayWindow.webContents.send('UPDATE_OVERLAY', { type: 'time', text: timeString });
+  }
+});
+
+ipcMain.handle('RESIZE_OVERLAY', (event, { width, height }) => {
+  if (overlayWindow) {
+    overlayWindow.setSize(width, height);
+  }
+});
+
+ipcMain.on('OVERLAY_STOP_CLICKED', () => {
+  if (mainWindow) {
+    mainWindow.webContents.send('HOTKEY_TOGGLE_RECORDING'); // Reuse toggle logic to stop
+  }
+});
+
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();

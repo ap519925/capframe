@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Monitor, Crop, CheckCircle, Square, Play, Download, Settings, Mic, MicOff, Video, Sliders, Share2, Youtube, Facebook, UploadCloud, Sparkles } from 'lucide-react';
+import { Monitor, Crop, CheckCircle, Square, Play, Download, Settings, Mic, MicOff, Video, Sliders, Share2, Youtube, Facebook, UploadCloud, Sparkles, Rewind, Clock } from 'lucide-react';
 
 const SocialIcon = ({ type, className }) => {
     if (type === 'tiktok') {
@@ -36,6 +36,11 @@ function App() {
     const [isTrimming, setIsTrimming] = useState(false);
     const [trimMessage, setTrimMessage] = useState(null);
 
+    const [isReplayMode, setIsReplayMode] = useState(false);
+    const [replayDuration, setReplayDuration] = useState(30); // seconds
+    const [replayBufferActive, setReplayBufferActive] = useState(false);
+    const replayChunksRef = useRef([]);
+
     const mediaRecorderRef = useRef(null);
     const timerRef = useRef(null);
     const animationFrameRef = useRef(null);
@@ -43,11 +48,15 @@ function App() {
     // Refs for hotkey logic
     const isRecordingRef = useRef(isRecording);
     const selectedSourceRef = useRef(selectedSource);
+    const replayBufferActiveRef = useRef(replayBufferActive);
+    const replayDurationRef = useRef(replayDuration);
 
     useEffect(() => {
         isRecordingRef.current = isRecording;
         selectedSourceRef.current = selectedSource;
-    }, [isRecording, selectedSource]);
+        replayBufferActiveRef.current = replayBufferActive;
+        replayDurationRef.current = replayDuration;
+    }, [isRecording, selectedSource, replayBufferActive, replayDuration]);
 
     const formatTime = (seconds) => {
         const mins = Math.floor(seconds / 60);
@@ -134,9 +143,16 @@ function App() {
                 return;
             }
 
-            // Sync state if call came from hotkey with override
             if (sourceOverride) {
                 setSelectedSource(sourceOverride);
+            }
+
+            // Sync state for immediate logic
+            const sourceId = sourceToUse.id;
+
+            // Show Overlay
+            if (window.electronAPI && window.electronAPI.showOverlay) {
+                window.electronAPI.showOverlay(isReplayMode ? 'replay' : 'record');
             }
 
             setIsRecording(true);
@@ -200,25 +216,56 @@ function App() {
             const mediaRecorder = new MediaRecorder(newStream, options);
             mediaRecorderRef.current = mediaRecorder;
 
-            mediaRecorder.ondataavailable = (event) => {
-                if (event.data.size > 0) {
-                    setRecordedChunks((prev) => [...prev, event.data]);
-                }
-            };
+            if (isReplayMode) {
+                // Replay Buffer Logic
+                replayChunksRef.current = [];
 
-            mediaRecorder.onstop = () => {
-                stopTimer();
-                setIsRecording(false);
-                if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
-            };
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) {
+                        const now = Date.now();
+                        replayChunksRef.current.push({ data: event.data, timestamp: now });
 
-            mediaRecorder.start();
-            startTimer();
+                        // Prune old chunks (keep buffer + 10s extra safety)
+                        const cutoff = now - (replayDurationRef.current * 1000) - 10000;
+                        while (replayChunksRef.current.length > 0 && replayChunksRef.current[0].timestamp < cutoff) {
+                            replayChunksRef.current.shift();
+                        }
+                    }
+                };
 
+                mediaRecorder.onstop = () => {
+                    setReplayBufferActive(false);
+                    if (window.electronAPI && window.electronAPI.hideOverlay) window.electronAPI.hideOverlay();
+                    if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+                };
+
+                // Request data every 1s for granular buffer
+                mediaRecorder.start(1000);
+                setReplayBufferActive(true);
+                // In replay mode, show "Ready" or buffer time on overlay
+                if (window.electronAPI && window.electronAPI.updateOverlayTime) window.electronAPI.updateOverlayTime('Buffer');
+            } else {
+                // Standard Recording Logic
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) {
+                        setRecordedChunks((prev) => [...prev, event.data]);
+                    }
+                };
+
+                mediaRecorder.onstop = () => {
+                    stopTimer();
+                    setIsRecording(false);
+                    if (window.electronAPI && window.electronAPI.hideOverlay) window.electronAPI.hideOverlay();
+                    if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+                };
+                mediaRecorder.start();
+                startTimer();
+            }
         } catch (err) {
             console.error("Error starting recording:", err);
             setError("Failed to start recording. " + err.message);
             setIsRecording(false);
+            setReplayBufferActive(false);
         }
     };
 
@@ -235,9 +282,44 @@ function App() {
     const handleStartRecordingRef = useRef(handleStartRecording);
     const handleStopRecordingRef = useRef(handleStopRecording);
 
+    const saveReplay = () => {
+        if (!replayBufferActiveRef.current || replayChunksRef.current.length === 0) return;
+
+        console.log("Saving Replay...");
+        const now = Date.now();
+        const cutoff = now - (replayDurationRef.current * 1000);
+
+        // Filter chunks that overlap with the time window
+        // Note: This is approximate as valid chunks might start before cutoff
+        const validChunks = replayChunksRef.current
+            .filter(chunk => chunk.timestamp >= cutoff)
+            .map(c => c.data);
+
+        // If we don't have enough, maybe take all?
+        const finalChunks = validChunks.length > 0 ? validChunks : replayChunksRef.current.map(c => c.data);
+
+        const blob = new Blob(finalChunks, { type: 'video/webm' });
+        const url = URL.createObjectURL(blob);
+
+        // Auto download/save
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `replay-${replayDurationRef.current}s-${new Date().toISOString().replace(/:/g, '-')}.webm`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+
+        // Optional: Flash UI or notify
+        setTrimMessage(`Saved last ${replayDurationRef.current} seconds!`);
+        setTimeout(() => setTrimMessage(null), 3000);
+    };
+
+    const saveReplayRef = useRef(saveReplay);
+
     useEffect(() => {
         handleStartRecordingRef.current = handleStartRecording;
         handleStopRecordingRef.current = handleStopRecording;
+        saveReplayRef.current = saveReplay;
     }, [handleStartRecording, handleStopRecording]);
 
     // Hotkey listener
@@ -245,28 +327,49 @@ function App() {
         if (!window.electronAPI) return;
 
         const handleToggle = () => {
-            console.log("Hotkey triggered. Recording:", isRecordingRef.current);
-            if (isRecordingRef.current) {
-                handleStopRecordingRef.current();
-            } else {
-                if (!selectedSourceRef.current) {
-                    // Auto-select screen 1
-                    if (window.electronAPI.getSources) {
-                        window.electronAPI.getSources().then(sources => {
-                            const screen1 = sources.find(s => s.name.includes("Screen 1") || s.name.includes("Entire Screen")) || sources[0];
-                            if (screen1) {
-                                handleStartRecordingRef.current(screen1);
-                            }
-                        });
-                    }
+            console.log("Hotkey triggered. Recording:", isRecordingRef.current, "Buffer:", replayBufferActiveRef.current);
+
+            if (isReplayMode) {
+                // In replay mode, toggle buffer on/off
+                if (replayBufferActiveRef.current) {
+                    handleStopRecordingRef.current();
                 } else {
-                    handleStartRecordingRef.current();
+                    // Start buffer
+                    if (selectedSourceRef.current) {
+                        handleStartRecordingRef.current();
+                    }
+                }
+            } else {
+                // Standard mode
+                if (isRecordingRef.current) {
+                    handleStopRecordingRef.current();
+                } else {
+                    if (selectedSourceRef.current) {
+                        handleStartRecordingRef.current();
+                    } else {
+                        // Auto-select screen 1 logic if needed
+                        if (window.electronAPI.getSources) {
+                            window.electronAPI.getSources().then(sources => {
+                                const screen1 = sources[0];
+                                if (screen1) handleStartRecordingRef.current(screen1);
+                            });
+                        }
+                    }
                 }
             }
         };
 
+        const handleSaveReplay = () => {
+            if (isReplayMode && replayBufferActiveRef.current) {
+                saveReplayRef.current();
+            }
+        };
+
         window.electronAPI.onHotkeyToggleRecording(handleToggle);
-    }, []);
+        if (window.electronAPI.onHotkeySaveReplay) {
+            window.electronAPI.onHotkeySaveReplay(handleSaveReplay);
+        }
+    }, [isReplayMode]); // Re-bind if mode changes to ensure correct logic if needed, though refs handle state
 
     // Preview generation
     useEffect(() => {
@@ -280,7 +383,17 @@ function App() {
     const startTimer = () => {
         setRecordingTime(0);
         timerRef.current = setInterval(() => {
-            setRecordingTime(prev => prev + 1);
+            setRecordingTime(prev => {
+                const next = prev + 1;
+                if (window.electronAPI && window.electronAPI.updateOverlayTime) {
+                    // Slight rough formatting here, ideally pass helper
+                    const mins = Math.floor(next / 60);
+                    const secs = next % 60;
+                    const timeStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+                    window.electronAPI.updateOverlayTime(timeStr);
+                }
+                return next;
+            });
         }, 1000);
     };
 
@@ -370,20 +483,68 @@ function App() {
                     <div className="p-6 space-y-6">
 
                         {/* Status & Timer */}
+                        {/* Status & Timer */}
                         <div className="flex flex-col items-center justify-center space-y-2">
-                            <div className={`text-6xl font-mono font-medium tracking-tighter ${isRecording ? 'text-red-500 drop-shadow-[0_0_15px_rgba(239,68,68,0.5)]' : 'text-slate-500'}`}>
-                                {formatTime(recordingTime)}
-                            </div>
-                            <div className="flex items-center gap-2 h-6">
-                                {isRecording ? (
-                                    <span className="flex items-center gap-2 px-3 py-1 rounded-full bg-red-500/10 text-red-500 text-xs font-bold uppercase tracking-wider border border-red-500/20 animate-pulse">
-                                        <div className="w-1.5 h-1.5 bg-current rounded-full" />
-                                        Recording Live
-                                    </span>
-                                ) : (
-                                    <span className="text-slate-500 text-sm font-medium">Ready</span>
-                                )}
-                            </div>
+                            {/* Replay Mode Toggle */}
+                            {!isRecording && !replayBufferActive && (
+                                <div className="flex gap-2 mb-4 bg-slate-900/50 p-1 rounded-lg border border-slate-700">
+                                    <button
+                                        onClick={() => setIsReplayMode(false)}
+                                        className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${!isReplayMode ? 'bg-slate-700 text-white' : 'text-slate-500 hover:text-slate-300'}`}
+                                    >
+                                        Standard
+                                    </button>
+                                    <button
+                                        onClick={() => setIsReplayMode(true)}
+                                        className={`px-3 py-1 text-xs font-bold rounded-md transition-all flex items-center gap-1 ${isReplayMode ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:text-slate-300'}`}
+                                    >
+                                        <Rewind className="w-3 h-3" /> Replay Buffer
+                                    </button>
+                                </div>
+                            )}
+
+                            {isReplayMode ? (
+                                <div className="min-h-[80px] flex flex-col items-center justify-center gap-2">
+                                    <div className={`text-xl font-medium tracking-wide ${replayBufferActive ? 'text-indigo-400' : 'text-slate-500'}`}>
+                                        {replayBufferActive ? 'Buffer Active' : 'Buffer Ready'}
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        {[30, 60, 90, 180].map(dur => (
+                                            <button
+                                                key={dur}
+                                                onClick={() => setReplayDuration(dur)}
+                                                className={`px-3 py-1 rounded text-xs font-bold border transition-all
+                                                    ${replayDuration === dur
+                                                        ? 'bg-indigo-500 border-indigo-500 text-white'
+                                                        : 'border-slate-700 text-slate-400 hover:border-slate-500'
+                                                    }
+                                                `}
+                                            >
+                                                {dur < 60 ? `${dur}s` : `${dur / 60}m${dur % 60 ? '30s' : ''}`}
+                                            </button>
+                                        ))}
+                                    </div>
+                                    <div className="text-[10px] text-slate-500 mt-1">
+                                        Use <span className="text-slate-300 font-mono">Alt+Shift+S</span> to save last {replayDuration < 60 ? `${replayDuration}s` : `${replayDuration / 60}m`}
+                                    </div>
+                                </div>
+                            ) : (
+                                <>
+                                    <div className={`text-6xl font-mono font-medium tracking-tighter ${isRecording ? 'text-red-500 drop-shadow-[0_0_15px_rgba(239,68,68,0.5)]' : 'text-slate-500'}`}>
+                                        {formatTime(recordingTime)}
+                                    </div>
+                                    <div className="flex items-center gap-2 h-6">
+                                        {isRecording ? (
+                                            <span className="flex items-center gap-2 px-3 py-1 rounded-full bg-red-500/10 text-red-500 text-xs font-bold uppercase tracking-wider border border-red-500/20 animate-pulse">
+                                                <div className="w-1.5 h-1.5 bg-current rounded-full" />
+                                                Recording Live
+                                            </span>
+                                        ) : (
+                                            <span className="text-slate-500 text-sm font-medium">Ready</span>
+                                        )}
+                                    </div>
+                                </>
+                            )}
                         </div>
 
                         {/* Source Selection & Preview */}
@@ -506,6 +667,13 @@ function App() {
                                     </div>
                                 )}
 
+                                {isReplayMode && trimMessage && (
+                                    <div className="mb-4 bg-indigo-500/10 border border-indigo-500/20 p-3 rounded-lg flex items-center gap-2 text-sm text-indigo-400 animate-in fade-in slide-in-from-top-2">
+                                        <CheckCircle className="w-4 h-4" />
+                                        {trimMessage}
+                                    </div>
+                                )}
+
                                 {trimMessage && (
                                     <div className="mb-4 bg-emerald-500/10 border border-emerald-500/20 p-3 rounded-lg flex items-center gap-2 text-sm text-emerald-400 animate-in fade-in slide-in-from-top-2">
                                         <CheckCircle className="w-4 h-4" />
@@ -538,13 +706,17 @@ function App() {
 
                         {/* Main Action Buttons */}
                         <div className="flex justify-center pt-2">
-                            {isRecording ? (
+                            {isRecording || replayBufferActive ? (
                                 <button
                                     onClick={handleStopRecording}
-                                    className="flex items-center gap-3 px-8 py-4 bg-red-500 hover:bg-red-600 active:bg-red-700 text-white rounded-2xl font-semibold shadow-lg shadow-red-500/30 transition-all transform hover:scale-[1.02] active:scale-[0.98]"
+                                    className={`flex items-center gap-3 px-8 py-4 rounded-2xl font-semibold shadow-lg transition-all transform hover:scale-[1.02] active:scale-[0.98]
+                                        ${isReplayMode
+                                            ? 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-500/30'
+                                            : 'bg-red-500 hover:bg-red-600 shadow-red-500/30'
+                                        } text-white`}
                                 >
                                     <Square className="w-5 h-5 fill-current" />
-                                    Stop Recording
+                                    {isReplayMode ? 'Stop Buffer' : 'Stop Recording'}
                                 </button>
                             ) : previewUrl ? (
                                 <div className="flex gap-4">
@@ -572,7 +744,7 @@ function App() {
                                     disabled={!selectedSource}
                                 >
                                     <div className={`w-3 h-3 rounded-full ${selectedSource ? 'bg-red-500 animate-pulse' : 'bg-slate-500'}`} />
-                                    Start Recording
+                                    {isReplayMode ? 'Start Buffer' : 'Start Recording'}
                                 </button>
                             )}
                         </div>

@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Overlay</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: transparent;
+            overflow: hidden;
+            font-family: system-ui, -apple-system, sans-serif;
+            user-select: none;
+            -webkit-app-region: drag;
+            /* Make the whole thing draggable */
+        }
+
+        .container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(15, 23, 42, 0.9);
+            /* Slate-900 with opacity */
+            padding: 6px 12px;
+            border-radius: 20px;
+            border: 1px solid rgba(71, 85, 105, 0.5);
+            /* Slate-600 */
+            width: fit-content;
+            margin: 2px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            transition: all 0.3s ease;
+        }
+
+        .container.minimized {
+            width: 12px;
+            height: 12px;
+            padding: 6px;
+            gap: 0;
+            justify-content: center;
+        }
+
+        .dot {
+            width: 10px;
+            height: 10px;
+            background-color: #ef4444;
+            /* Red-500 */
+            border-radius: 50%;
+            box-shadow: 0 0 8px rgba(239, 68, 68, 0.6);
+            animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+            flex-shrink: 0;
+        }
+
+        .replay-dot {
+            background-color: #6366f1;
+            /* Indigo-500 */
+            box-shadow: 0 0 8px rgba(99, 102, 241, 0.6);
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: .5;
+            }
+        }
+
+        .timer {
+            color: #e2e8f0;
+            /* Slate-200 */
+            font-size: 14px;
+            font-variant-numeric: tabular-nums;
+            font-weight: 500;
+        }
+
+        .controls {
+            display: flex;
+            gap: 4px;
+            -webkit-app-region: no-drag;
+        }
+
+        .btn {
+            background: none;
+            border: none;
+            color: #94a3b8;
+            /* Slate-400 */
+            cursor: pointer;
+            padding: 2px;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .btn:hover {
+            color: #f1f5f9;
+            /* Slate-100 */
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        /* SVG Styles */
+        svg {
+            width: 14px;
+            height: 14px;
+        }
+
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container" id="container">
+        <div class="dot" id="statusDot"></div>
+        <div class="timer" id="timer">00:00</div>
+        <div class="controls" id="controls">
+            <!-- Stop Button -->
+            <button class="btn" id="stopBtn" title="Stop Recording">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                </svg>
+            </button>
+            <!-- Minimize Button -->
+            <button class="btn" id="collapseBtn" title="Collapse">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="4 14 10 14 10 20"></polyline>
+                    <polyline points="20 10 14 10 14 4"></polyline>
+                </svg>
+            </button>
+        </div>
+    </div>
+
+    <script>
+        const { ipcRenderer } = require('electron');
+
+        const container = document.getElementById('container');
+        const timer = document.getElementById('timer');
+        const controls = document.getElementById('controls');
+        const collapseBtn = document.getElementById('collapseBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const statusDot = document.getElementById('statusDot');
+
+        let isReplayMode = false;
+        let isMinimized = false;
+
+        ipcRenderer.on('UPDATE_OVERLAY', (event, data) => {
+            if (data.type === 'time') {
+                timer.textContent = data.text;
+            } else if (data.type === 'mode') {
+                isReplayMode = data.mode === 'replay';
+                if (isReplayMode) {
+                    statusDot.classList.add('replay-dot');
+                    timer.style.display = 'none'; // Hide timer in replay buffer mode? Or show 'Ready'
+                } else {
+                    statusDot.classList.remove('replay-dot');
+                    timer.style.display = 'block';
+                }
+
+                if (data.status === 'buffer-ready') {
+                    timer.textContent = 'Ready';
+                }
+            }
+        });
+
+        // Handle Collapse
+        collapseBtn.addEventListener('click', () => {
+            isMinimized = !isMinimized;
+            if (isMinimized) {
+                container.classList.add('minimized');
+                timer.classList.add('hidden');
+                controls.classList.add('hidden');
+                // Tell main process to resize window
+                ipcRenderer.invoke('RESIZE_OVERLAY', { width: 40, height: 40 });
+            } else {
+
+            }
+        });
+
+        // Expand on click if minimized
+        container.addEventListener('dblclick', () => {
+            if (isMinimized) {
+                isMinimized = false;
+                container.classList.remove('minimized');
+                timer.classList.remove('hidden');
+                controls.classList.remove('hidden');
+                ipcRenderer.invoke('RESIZE_OVERLAY', { width: 160, height: 60 });
+            }
+        });
+
+        stopBtn.addEventListener('click', () => {
+            ipcRenderer.send('OVERLAY_STOP_CLICKED');
+        });
+    </script>
+</body>
+
+</html>
