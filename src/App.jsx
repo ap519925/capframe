@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Monitor, Crop, CheckCircle, Square, Play, Download, Settings, Mic, MicOff, Video, Sliders, Share2, Youtube, Facebook, UploadCloud, Sparkles, Rewind, Clock } from 'lucide-react';
+import { Monitor, Crop, CheckCircle, Square, Play, Download, Settings, Mic, MicOff, Video, Sliders, Share2, Youtube, Facebook, UploadCloud, Sparkles, Rewind, Clock, Laptop } from 'lucide-react';
 
 const SocialIcon = ({ type, className }) => {
     if (type === 'tiktok') {
@@ -25,7 +25,8 @@ function App() {
     const [previewUrl, setPreviewUrl] = useState(null);
     const [recordingTime, setRecordingTime] = useState(0);
     const [stream, setStream] = useState(null);
-    const [audioEnabled, setAudioEnabled] = useState(false);
+    const [micEnabled, setMicEnabled] = useState(false);
+    const [systemAudioEnabled, setSystemAudioEnabled] = useState(true);
     const [selectedSource, setSelectedSource] = useState(null);
     const [error, setError] = useState(null);
     const [sourceSelectionModal, setSourceSelectionModal] = useState(null);
@@ -88,6 +89,8 @@ function App() {
     };
 
     const createCroppedStream = (originalStream, rect) => {
+        // ... (Keep existing implementation, but remove audio handling from here since we'll mix it at top level)
+        // Actually, we can just return the video part here and add audio later
         const videoTrack = originalStream.getVideoTracks()[0];
         const { width: videoWidth, height: videoHeight } = videoTrack.getSettings();
 
@@ -125,10 +128,6 @@ function App() {
                 draw();
 
                 const stream = canvas.captureStream(60);
-                const audioTracks = originalStream.getAudioTracks();
-                if (audioTracks.length > 0) {
-                    audioTracks.forEach(track => stream.addTrack(track));
-                }
                 resolve(stream);
             };
         });
@@ -162,58 +161,95 @@ function App() {
             setAiAnalysis(null); // Reset AI
             setTrimMessage(null); // Reset Trim
 
-            let constraints;
-            const audioConstraint = audioEnabled ? {
-                mandatory: {
-                    chromeMediaSource: 'desktop'
-                }
-            } : false;
+            setAiAnalysis(null); // Reset AI
+            setTrimMessage(null); // Reset Trim
 
+            // 1. Get Video Stream
+            let videoConstraints;
             if (sourceToUse.id === 'area') {
                 const sources = await window.electronAPI.getSources();
                 const screenSource = sources[0];
-
-                constraints = {
-                    audio: audioConstraint,
-                    video: {
-                        mandatory: {
-                            chromeMediaSource: 'desktop',
-                            chromeMediaSourceId: screenSource.id,
-                            maxWidth: 4000,
-                            maxHeight: 4000
-                        }
+                videoConstraints = {
+                    mandatory: {
+                        chromeMediaSource: 'desktop',
+                        chromeMediaSourceId: screenSource.id,
+                        maxWidth: 4000, maxHeight: 4000
                     }
                 };
             } else {
-                constraints = {
-                    audio: audioConstraint,
-                    video: {
-                        mandatory: {
-                            chromeMediaSource: 'desktop',
-                            chromeMediaSourceId: sourceToUse.id,
-                            maxWidth: 3840,
-                            maxHeight: 2160,
-                            minFrameRate: 30,
-                            maxFrameRate: 60
-                        }
+                videoConstraints = {
+                    mandatory: {
+                        chromeMediaSource: 'desktop',
+                        chromeMediaSourceId: sourceToUse.id,
+                        maxWidth: 3840, maxHeight: 2160,
+                        minFrameRate: 30, maxFrameRate: 60
                     }
                 };
             }
 
-            let newStream = await navigator.mediaDevices.getUserMedia(constraints);
+            let videoStream = await navigator.mediaDevices.getUserMedia({
+                audio: false,
+                video: videoConstraints
+            });
 
-            if (audioEnabled && newStream.getAudioTracks().length === 0) {
-                console.warn("Audio enabled but no audio track obtained.");
-            }
-
+            // Crop if needed
             if (sourceToUse.id === 'area' && sourceToUse.rect) {
-                newStream = await createCroppedStream(newStream, sourceToUse.rect);
+                videoStream = await createCroppedStream(videoStream, sourceToUse.rect);
             }
 
-            setStream(newStream);
+            // 2. Get Audio Streams (System + Mic) and Mix
+            const audioContext = new AudioContext();
+            const dest = audioContext.createMediaStreamDestination();
+            let hasAudio = false;
+
+            if (systemAudioEnabled) {
+                try {
+                    const systemStream = await navigator.mediaDevices.getUserMedia({
+                        audio: {
+                            mandatory: {
+                                chromeMediaSource: 'desktop'
+                            }
+                        },
+                        video: false
+                    });
+                    if (systemStream.getAudioTracks().length > 0) {
+                        const src = audioContext.createMediaStreamSource(systemStream);
+                        src.connect(dest);
+                        hasAudio = true;
+                    }
+                } catch (e) {
+                    console.warn("System audio capture failed:", e);
+                }
+            }
+
+            if (micEnabled) {
+                try {
+                    const micStream = await navigator.mediaDevices.getUserMedia({
+                        audio: true,
+                        video: false
+                    });
+                    if (micStream.getAudioTracks().length > 0) {
+                        const src = audioContext.createMediaStreamSource(micStream);
+                        src.connect(dest);
+                        hasAudio = true;
+                    }
+                } catch (e) {
+                    console.warn("Mic capture failed:", e);
+                }
+            }
+
+            // 3. Combine Video + Mixed Audio
+            const finalStream = new MediaStream();
+            videoStream.getVideoTracks().forEach(track => finalStream.addTrack(track));
+
+            if (hasAudio) {
+                dest.stream.getAudioTracks().forEach(track => finalStream.addTrack(track));
+            }
+
+            setStream(finalStream);
 
             const options = { mimeType: 'video/webm; codecs=vp9' };
-            const mediaRecorder = new MediaRecorder(newStream, options);
+            const mediaRecorder = new MediaRecorder(finalStream, options);
             mediaRecorderRef.current = mediaRecorder;
 
             if (isReplayMode) {
@@ -487,13 +523,22 @@ function App() {
                             </h1>
                         </div>
                         <div className="flex items-center gap-2">
-                            <button
-                                onClick={() => setAudioEnabled(!audioEnabled)}
-                                className={`p-2 rounded-full transition-all duration-300 ${audioEnabled ? 'bg-indigo-500/20 text-indigo-400' : 'bg-slate-700/50 text-slate-400 hover:text-slate-200'}`}
-                                title={audioEnabled ? "Audio On" : "Audio Off"}
-                            >
-                                {audioEnabled ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
-                            </button>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    onClick={() => setSystemAudioEnabled(!systemAudioEnabled)}
+                                    className={`p-2 rounded-full transition-all duration-300 ${systemAudioEnabled ? 'bg-blue-500/20 text-blue-400' : 'bg-slate-700/50 text-slate-400 hover:text-slate-200'}`}
+                                    title={systemAudioEnabled ? "System Audio On" : "System Audio Off"}
+                                >
+                                    <Laptop className="w-5 h-5" />
+                                </button>
+                                <button
+                                    onClick={() => setMicEnabled(!micEnabled)}
+                                    className={`p-2 rounded-full transition-all duration-300 ${micEnabled ? 'bg-indigo-500/20 text-indigo-400' : 'bg-slate-700/50 text-slate-400 hover:text-slate-200'}`}
+                                    title={micEnabled ? "Mic On" : "Mic Off"}
+                                >
+                                    {micEnabled ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
+                                </button>
+                            </div>
                         </div>
                     </div>
 
