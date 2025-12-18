@@ -9,4 +9,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
     showOverlay: (mode) => ipcRenderer.send('SHOW_OVERLAY', { mode }),
     hideOverlay: () => ipcRenderer.send('HIDE_OVERLAY'),
     updateOverlayTime: (time) => ipcRenderer.send('UPDATE_OVERLAY_TIME', time),
+    getCurrentScreenId: () => ipcRenderer.invoke('GET_CURRENT_SCREEN_ID'),
 });

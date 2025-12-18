@@ -38,8 +38,16 @@ function createWindow() {
     return sources.map(source => ({
       id: source.id,
       name: source.name,
-      thumbnail: source.thumbnail.toDataURL()
+      thumbnail: source.thumbnail.toDataURL(),
+      display_id: source.display_id // Note: display_id might not be standard property in all electron versions, but source.id usually contains it
     }));
+  });
+
+  ipcMain.handle('GET_CURRENT_SCREEN_ID', () => {
+    const point = screen.getCursorScreenPoint();
+    const display = screen.getDisplayNearestPoint(point);
+    // desktopCapturer source IDs are typically 'screen:display_id:0'
+    return `screen:${display.id}:0`;
   });
 
   ipcMain.handle('SELECT_AREA', async () => {

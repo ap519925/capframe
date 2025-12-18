@@ -334,8 +334,14 @@ function App() {
                 if (replayBufferActiveRef.current) {
                     handleStopRecordingRef.current();
                 } else {
-                    // Start buffer
-                    if (selectedSourceRef.current) {
+                    // Start buffer - Smart Detect Screen
+                    if (window.electronAPI.getSources && window.electronAPI.getCurrentScreenId) {
+                        Promise.all([window.electronAPI.getSources(), window.electronAPI.getCurrentScreenId()])
+                            .then(([sources, currentId]) => {
+                                const target = sources.find(s => s.id === currentId) || sources[0];
+                                handleStartRecordingRef.current(target);
+                            });
+                    } else if (selectedSourceRef.current) {
                         handleStartRecordingRef.current();
                     }
                 }
@@ -344,24 +350,36 @@ function App() {
                 if (isRecordingRef.current) {
                     handleStopRecordingRef.current();
                 } else {
-                    if (selectedSourceRef.current) {
-                        handleStartRecordingRef.current();
-                    } else {
-                        // Auto-select screen 1 logic if needed
-                        if (window.electronAPI.getSources) {
-                            window.electronAPI.getSources().then(sources => {
-                                const screen1 = sources[0];
-                                if (screen1) handleStartRecordingRef.current(screen1);
+                    // Start recording - Smart Detect Screen
+                    if (window.electronAPI.getSources && window.electronAPI.getCurrentScreenId) {
+                        Promise.all([window.electronAPI.getSources(), window.electronAPI.getCurrentScreenId()])
+                            .then(([sources, currentId]) => {
+                                const target = sources.find(s => s.id === currentId) || sources[0];
+                                handleStartRecordingRef.current(target);
                             });
-                        }
+                    } else if (selectedSourceRef.current) {
+                        handleStartRecordingRef.current();
                     }
                 }
             }
         };
 
         const handleSaveReplay = () => {
-            if (isReplayMode && replayBufferActiveRef.current) {
+            // Smart Action: If active -> Save. If not -> Start Flashback on current screen.
+            if (replayBufferActiveRef.current) {
                 saveReplayRef.current();
+            } else {
+                // Auto-switch to replay mode if needed?
+                // For now, let's assume this key forces Flashback start
+                setIsReplayMode(true); // Switch UI to replay mode
+
+                if (window.electronAPI.getSources && window.electronAPI.getCurrentScreenId) {
+                    Promise.all([window.electronAPI.getSources(), window.electronAPI.getCurrentScreenId()])
+                        .then(([sources, currentId]) => {
+                            const target = sources.find(s => s.id === currentId) || sources[0];
+                            handleStartRecordingRef.current(target);
+                        });
+                }
             }
         };
 
