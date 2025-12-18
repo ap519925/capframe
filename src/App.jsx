@@ -318,7 +318,13 @@ function App() {
     const handleStopRecordingRef = useRef(handleStopRecording);
 
     const saveReplay = () => {
-        if (!replayBufferActiveRef.current || replayChunksRef.current.length === 0) return;
+        if (!replayBufferActiveRef.current) return;
+
+        if (replayChunksRef.current.length === 0) {
+            setTrimMessage("Buffer empty! Wait a moment...");
+            setTimeout(() => setTrimMessage(null), 2000);
+            return;
+        }
 
         console.log("Saving Replay...");
         const now = Date.now();
@@ -404,15 +410,20 @@ function App() {
             if (replayBufferActiveRef.current) {
                 saveReplayRef.current();
             } else {
-                // Auto-switch to replay mode if needed?
-                // For now, let's assume this key forces Flashback start
-                setIsReplayMode(true); // Switch UI to replay mode
+                // Auto-switch to replay mode
+                setIsReplayMode(true);
+                setTrimMessage("Flashback Started... Wait 30s to fill buffer.");
+                setTimeout(() => setTrimMessage(null), 3000);
 
                 if (window.electronAPI.getSources && window.electronAPI.getCurrentScreenId) {
                     Promise.all([window.electronAPI.getSources(), window.electronAPI.getCurrentScreenId()])
                         .then(([sources, currentId]) => {
                             const target = sources.find(s => s.id === currentId) || sources[0];
                             handleStartRecordingRef.current(target);
+                        })
+                        .catch(err => {
+                            console.error("Smart Start Failed:", err);
+                            setError("Could not auto-start Flashback.");
                         });
                 }
             }

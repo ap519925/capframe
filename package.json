@@ -45,8 +45,7 @@
     },
     "win": {
       "target": [
-        "nsis",
-        "appx"
+        "nsis"
       ],
       "icon": "build/icon.png"
     },
