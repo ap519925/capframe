@@ -36,7 +36,31 @@ function App() {
 
     // Settings logic
     const [showSettings, setShowSettings] = useState(false);
-    const [apiKey, setApiKey] = useState(() => localStorage.getItem('GEMINI_API_KEY') || '');
+    const [apiKey, setApiKey] = useState(() => localStorage.getItem('GEMINI_API_KEY') || 'AIzaSyBDTFMYIWpckHC714g2dFiXg9fsWdBLK0I');
+
+    // Audio Settings
+    const [audioBitrate, setAudioBitrate] = useState(128000); // 128 kbps default
+    const [selectedMicId, setSelectedMicId] = useState('default');
+    const [audioDevices, setAudioDevices] = useState([]);
+
+    // Video Settings
+    const [videoResolution, setVideoResolution] = useState('1080p'); // 4k, 2k, 1080p, 720p, 480p
+    const [frameRate, setFrameRate] = useState(60); // 30, 60, 0 (Native/Max)
+
+    useEffect(() => {
+        const getDevices = async () => {
+            try {
+                // Request permission first to get labels
+                await navigator.mediaDevices.getUserMedia({ audio: true });
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const mics = devices.filter(d => d.kind === 'audioinput');
+                setAudioDevices(mics);
+            } catch (e) {
+                console.warn("Failed to enumerate audio devices:", e);
+            }
+        };
+        getDevices();
+    }, []);
 
     // AI Features State
     const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -49,6 +73,11 @@ function App() {
     const [replayBufferActive, setReplayBufferActive] = useState(false);
     const replayChunksRef = useRef([]);
 
+    const [savedClips, setSavedClips] = useState([]);
+
+    // Countdown State
+    const [countdown, setCountdown] = useState(null);
+
     const mediaRecorderRef = useRef(null);
     const timerRef = useRef(null);
     const animationFrameRef = useRef(null);
@@ -60,6 +89,7 @@ function App() {
     const replayDurationRef = useRef(replayDuration);
 
     const initialChunkRef = useRef(null);
+    const recordingStartTimeRef = useRef(0);
 
     useEffect(() => {
         isRecordingRef.current = isRecording;
@@ -78,25 +108,50 @@ function App() {
         return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
     };
 
-    const extractFrames = async (videoBlob, numFrames = 3) => {
+    const extractFrames = async (videoBlob, numFrames = 3, knownDuration = null) => {
         const video = document.createElement('video');
         video.src = URL.createObjectURL(videoBlob);
+        video.muted = true;
+        video.playsInline = true;
 
         await new Promise(r => video.onloadedmetadata = r);
 
         const frames = [];
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d');
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
+        canvas.width = video.videoWidth || 1920;
+        canvas.height = video.videoHeight || 1080;
 
-        const duration = video.duration;
+        // MediaRecorder blobs often have Infinity duration. Use known duration if available.
+        let duration = knownDuration || video.duration;
+        if (!Number.isFinite(duration)) {
+            console.warn("Video duration is Infinity, defaulting to known recording time or 10s fallback");
+            duration = recordingTime > 0 ? recordingTime : 10;
+        }
+
         const interval = duration / (numFrames + 1);
 
         for (let i = 1; i <= numFrames; i++) {
-            video.currentTime = interval * i;
-            await new Promise(r => video.onseeked = r);
-            ctx.drawImage(video, 0, 0);
+            const targetTime = interval * i;
+            video.currentTime = targetTime;
+
+            // Safe seek with timeout
+            await new Promise((resolve) => {
+                const onSeek = () => {
+                    video.removeEventListener('seeked', onSeek);
+                    resolve();
+                };
+                const onTimeout = () => {
+                    video.removeEventListener('seeked', onSeek);
+                    console.warn(`Frame extraction seek timeout at ${targetTime}s`);
+                    resolve(); // Resolve anyway to continue
+                };
+
+                video.addEventListener('seeked', onSeek);
+                setTimeout(onTimeout, 1000); // 1s timeout
+            });
+
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
             const base64 = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
             frames.push({
                 inlineData: {
@@ -108,6 +163,25 @@ function App() {
         return frames;
     };
 
+    const parseAIJSON = (text) => {
+        try {
+            // 1. Try simple clean
+            const cleanStr = text.replace(/```json/g, '').replace(/```/g, '').trim();
+            return JSON.parse(cleanStr);
+        } catch (e) {
+            // 2. Try Regex extraction for {...}
+            const match = text.match(/\{[\s\S]*\}/);
+            if (match) {
+                try {
+                    return JSON.parse(match[0]);
+                } catch (e2) {
+                    console.error("JSON Regex parse failed:", e2);
+                }
+            }
+            throw new Error("Failed to parse AI response as JSON: " + text.substring(0, 50) + "...");
+        }
+    };
+
     const handleAnalyzeAI = async () => {
         if (!apiKey) {
             setShowSettings(true);
@@ -117,11 +191,15 @@ function App() {
         setIsAnalyzing(true);
         setError(null);
         try {
+            setTrimMessage("Extracting frames...");
             const blob = new Blob(recordedChunks, { type: 'video/webm' });
-            const frames = await extractFrames(blob);
+            // Ensure we at least pass 1 as duration to avoid divide by zero if something went wrong
+            const durationArg = recordingTime > 0 ? recordingTime : 1;
+            const frames = await extractFrames(blob, 3, durationArg);
 
+            setTrimMessage("Consulting Gemini AI...");
             const genAI = new GoogleGenerativeAI(apiKey);
-            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-001" });
 
             const prompt = "Analyze these screenshots from a screen recording. Provide a JSON response with: title (short catchy title), summary (2 sentences), and tags (array of 3 keywords). format: { \"title\": \"...\", \"summary\": \"...\", \"tags\": [...] }";
 
@@ -129,14 +207,14 @@ function App() {
             const response = await result.response;
             const text = response.text();
 
-            // Clean markdown
-            const jsonStr = text.replace(/```json/g, '').replace(/```/g, '').trim();
-            const data = JSON.parse(jsonStr);
+            const data = parseAIJSON(text);
 
             setAiAnalysis(data);
+            setTrimMessage(null);
         } catch (err) {
             console.error(err);
             setError("AI Analysis failed: " + err.message);
+            setTrimMessage(null);
         } finally {
             setIsAnalyzing(false);
         }
@@ -165,20 +243,37 @@ function App() {
             // Custom extraction for start analysis
             const video = document.createElement('video');
             video.src = URL.createObjectURL(blob);
+            video.muted = true;
             await new Promise(r => video.onloadedmetadata = r);
 
             const startFrames = [];
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
+            canvas.width = video.videoWidth || 1920;
+            canvas.height = video.videoHeight || 1080;
 
             // Grab frames at 0, 1, 2... up to min(10, duration)
-            const checkDuration = Math.min(10, video.duration);
+            let checkDuration = 10;
+            if (Number.isFinite(video.duration)) {
+                checkDuration = Math.min(10, video.duration);
+            } else {
+                // Fallback to recordingTime, but default to 10 if that's somehow 0 (shouldn't be if recorded)
+                const fallbackDuration = recordingTime > 0 ? recordingTime : 10;
+                checkDuration = Math.min(10, fallbackDuration);
+            }
+
             for (let i = 0; i < checkDuration; i++) {
                 video.currentTime = i;
-                await new Promise(r => video.onseeked = r);
-                ctx.drawImage(video, 0, 0);
+
+                // Safe seek
+                await new Promise((resolve) => {
+                    const onSeek = () => { video.removeEventListener('seeked', onSeek); resolve(); };
+                    const onTimeout = () => { video.removeEventListener('seeked', onSeek); resolve(); };
+                    video.addEventListener('seeked', onSeek);
+                    setTimeout(onTimeout, 1000);
+                });
+
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
                 const base64 = canvas.toDataURL('image/jpeg', 0.5).split(',')[1]; // Lower quality for speed
                 startFrames.push({
                     inlineData: { data: base64, mimeType: "image/jpeg" }
@@ -186,7 +281,7 @@ function App() {
             }
 
             const genAI = new GoogleGenerativeAI(apiKey);
-            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-001" });
 
             const prompt = `Analyze these sequential frames taken at 1-second intervals from the start of a screen recording (0s, 1s, 2s...). 
             Identify the timestamp (in seconds) where meaningful activity starts (e.g. mouse movement, typing, window opening). 
@@ -198,8 +293,7 @@ function App() {
             const response = await result.response;
             const text = response.text();
 
-            const jsonStr = text.replace(/```json/g, '').replace(/```/g, '').trim();
-            const data = JSON.parse(jsonStr);
+            const data = parseAIJSON(text);
 
             if (data.start_time > 0) {
                 setSuggestedTrim(data.start_time);
@@ -273,11 +367,21 @@ function App() {
         video.srcObject = originalStream;
         video.muted = true;
 
+        // Critical Fix: Append to DOM to ensure playback continues in background/when scaling
+        video.style.position = 'fixed';
+        video.style.top = '0';
+        video.style.left = '0';
+        video.style.opacity = '0';
+        video.style.pointerEvents = 'none';
+        video.style.zIndex = '-1';
+        document.body.appendChild(video);
+
         return new Promise((resolve) => {
             video.onloadedmetadata = () => {
                 video.play();
 
                 const draw = () => {
+                    if (video.paused || video.ended) return;
                     ctx.drawImage(
                         video,
                         scaledRect.x, scaledRect.y, scaledRect.width, scaledRect.height, // Source
@@ -288,6 +392,20 @@ function App() {
                 draw();
 
                 const stream = canvas.captureStream(60);
+
+                // Cleanup when stream ends
+                const cleanup = () => {
+                    if (video.parentNode) {
+                        document.body.removeChild(video);
+                    }
+                    if (animationFrameRef.current) {
+                        cancelAnimationFrame(animationFrameRef.current);
+                    }
+                };
+
+                stream.getVideoTracks()[0].onended = cleanup;
+                // Also hook into the original stream ending if possible, but the local track stop usually triggers this.
+
                 resolve(stream);
             };
         });
@@ -309,18 +427,19 @@ function App() {
             // Sync state for immediate logic
             const sourceId = sourceToUse.id;
 
-            // Show Overlay
-            if (window.electronAPI && window.electronAPI.showOverlay) {
-                window.electronAPI.showOverlay(isReplayMode ? 'replay' : 'record');
-            }
+            // Start Countdown (UI State, not logic)
+            // We defer visual "Recording" state until after countdown, but we do need to block multiple clicks
 
-            setIsRecording(true);
             setError(null);
             setRecordedChunks([]);
             setPreviewUrl(null);
             setAiAnalysis(null); // Reset AI
             setTrimMessage(null); // Reset Trim
+            setTrimMessage(null); // Reset Trim
             initialChunkRef.current = null; // Reset Header
+
+            // ... (keep stream setup)
+            recordingStartTimeRef.current = Date.now();
 
             // 1. Get Video Stream (+ System Audio via constraints)
             let videoConstraints;
@@ -337,17 +456,29 @@ function App() {
                     mandatory: {
                         chromeMediaSource: 'desktop',
                         chromeMediaSourceId: activeSourceId,
-                        maxWidth: 4000, maxHeight: 4000,
-                        minFrameRate: 60, maxFrameRate: 60
+                        maxWidth: 4000, maxHeight: 4000, // Area always wants max to crop from
+                        minFrameRate: frameRate === 0 ? 60 : frameRate,
+                        maxFrameRate: frameRate === 0 ? 144 : frameRate
                     }
                 };
             } else {
+                let width = 1920, height = 1080;
+                switch (videoResolution) {
+                    case '4k': width = 3840; height = 2160; break;
+                    case '2k': width = 2560; height = 1440; break;
+                    case '1080p': width = 1920; height = 1080; break;
+                    case '720p': width = 1280; height = 720; break;
+                    case '480p': width = 854; height = 480; break;
+                }
+
                 videoConstraints = {
                     mandatory: {
                         chromeMediaSource: 'desktop',
                         chromeMediaSourceId: activeSourceId,
-                        maxWidth: 3840, maxHeight: 2160,
-                        minFrameRate: 60, maxFrameRate: 60
+                        maxWidth: width, maxHeight: height,
+                        minWidth: width, minHeight: height, // Force resolution
+                        minFrameRate: frameRate === 0 ? 30 : frameRate,
+                        maxFrameRate: frameRate === 0 ? 144 : frameRate // 0 = "Native" attempts high
                     }
                 };
             }
@@ -395,10 +526,14 @@ function App() {
 
             if (micEnabled) {
                 try {
-                    const micStream = await navigator.mediaDevices.getUserMedia({
-                        audio: true,
+                    const micConstraints = {
+                        audio: {
+                            deviceId: selectedMicId !== 'default' ? { exact: selectedMicId } : undefined
+                        },
                         video: false
-                    });
+                    };
+                    const micStream = await navigator.mediaDevices.getUserMedia(micConstraints);
+
                     if (micStream.getAudioTracks().length > 0) {
                         const micSrc = audioContext.createMediaStreamSource(micStream);
                         micSrc.connect(dest);
@@ -423,9 +558,35 @@ function App() {
 
             setStream(finalStream);
 
+            // COUNTDOWN LOGIC
+            // Only countdown for standard recording, not replay mode (unless desired, but user asked for "recording starts")
+            // Assuming Flashback is always on/passive, so maybe no countdown needed? 
+            // The prompt says "before the recording starts", implying the active recording session.
+            // Let's do it for both to be safe/consistent, or check isReplayMode.
+            // Actually flashback mode buffer starts immediately usually. 
+            // Let's add countdown for Standard Mode mainly.
+
+            if (!isReplayMode) {
+                setCountdown(2);
+                await new Promise(r => setTimeout(r, 1000));
+                setCountdown(1);
+                await new Promise(r => setTimeout(r, 1000));
+                setCountdown(null);
+            }
+
+            // Show Overlay NOW (after countdown)
+            if (window.electronAPI && window.electronAPI.showOverlay) {
+                window.electronAPI.showOverlay(isReplayMode ? 'replay' : 'record');
+            }
+
+            // NOW set is recording
+            setIsRecording(true);
+            recordingStartTimeRef.current = Date.now();
+
             const options = {
                 mimeType: 'video/webm; codecs=vp9',
-                videoBitsPerSecond: 25000000 // 25 Mbps
+                videoBitsPerSecond: 25000000, // 25 Mbps
+                audioBitsPerSecond: audioBitrate
             };
             const mediaRecorder = new MediaRecorder(finalStream, options);
             mediaRecorderRef.current = mediaRecorder;
@@ -503,7 +664,7 @@ function App() {
     const handleStartRecordingRef = useRef(handleStartRecording);
     const handleStopRecordingRef = useRef(handleStopRecording);
 
-    const saveReplay = () => {
+    const saveReplay = async () => {
         if (!replayBufferActiveRef.current) return;
 
         if (replayChunksRef.current.length === 0) {
@@ -512,48 +673,80 @@ function App() {
             return;
         }
 
-        console.log("Saving Replay...");
+        setTrimMessage("Saving Flashback...");
         const now = Date.now();
         const cutoff = now - (replayDurationRef.current * 1000);
 
         // Filter chunks that overlap with the time window
-        const validChunks = replayChunksRef.current
-            .filter(chunk => chunk.timestamp >= cutoff)
-            .map(c => c.data);
-
-        // Ensure we have the header chunk
-        let finalChunks = [];
-        if (initialChunkRef.current) {
-            finalChunks.push(initialChunkRef.current);
-        }
-
-        // Add valid chunks, avoiding duplicate of header
-        validChunks.forEach(chunk => {
-            if (chunk !== initialChunkRef.current) {
-                finalChunks.push(chunk);
-            }
-        });
+        let validChunksInfo = replayChunksRef.current.filter(chunk => chunk.timestamp >= cutoff);
 
         // Fallback if nothing matches time (e.g. very short starting session)
-        if (finalChunks.length === 0 && replayChunksRef.current.length > 0) {
-            finalChunks = replayChunksRef.current.map(c => c.data);
+        if (validChunksInfo.length === 0 && replayChunksRef.current.length > 0) {
+            validChunksInfo = [...replayChunksRef.current];
         }
-        // If we only have header, that's fine, it will just be short.
 
-        const blob = new Blob(finalChunks, { type: 'video/webm' });
-        const url = URL.createObjectURL(blob);
+        if (validChunksInfo.length === 0) {
+            setTrimMessage("Error: No video data captured.");
+            return;
+        }
 
-        // Auto download/save
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `replay-${replayDurationRef.current}s-${new Date().toISOString().replace(/:/g, '-')}.webm`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
+        try {
+            // 1. Construct the raw blob (Header + Gap + Recent Chunks)
+            const videoChunks = [];
+            if (initialChunkRef.current) {
+                videoChunks.push(initialChunkRef.current);
+            }
 
-        // Optional: Flash UI or notify
-        setTrimMessage(`Saved last ${replayDurationRef.current} seconds!`);
-        setTimeout(() => setTrimMessage(null), 3000);
+            validChunksInfo.forEach(c => {
+                if (c.data !== initialChunkRef.current) {
+                    videoChunks.push(c.data);
+                }
+            });
+
+            const rawBlob = new Blob(videoChunks, { type: 'video/webm' });
+            const arrayBuffer = await rawBlob.arrayBuffer();
+
+            // 2. Calculate Start Time for FFmpeg
+            // validChunksInfo[0].timestamp is the time the chunk *finished* (ondataavailable).
+            // We assume chunks are approx 1s duration (set in mediaRecorder.start(1000)).
+            // So the content starts approx 1s before the timestamp.
+            // We calculate the offset relative to the actual recording start.
+            const firstChunkTimestamp = validChunksInfo[0].timestamp;
+            let startTimeSeconds = (firstChunkTimestamp - recordingStartTimeRef.current - 1000) / 1000;
+            if (startTimeSeconds < 0) startTimeSeconds = 0;
+
+            console.log(`Flashback Save: Seeking to ${startTimeSeconds}s`);
+
+            // 3. Process with FFmpeg to fix timestamps ("trim" the gap)
+            // If electron API is available, use it. Otherwise fallback to raw download (likely broken but better than nothing).
+            let finalBlob = rawBlob;
+
+            if (window.electronAPI && window.electronAPI.trimVideo) {
+                const trimmedBuffer = await window.electronAPI.trimVideo(arrayBuffer, startTimeSeconds, replayDurationRef.current);
+                finalBlob = new Blob([trimmedBuffer], { type: 'video/webm' });
+            } else {
+                console.warn("Electron API not available, saving raw stream (may have playback issues due to timestamp gaps).");
+            }
+
+            // 4. Store in List (instead of auto-download)
+            const finalUrl = URL.createObjectURL(finalBlob);
+            const newClip = {
+                id: Date.now(),
+                url: finalUrl,
+                blob: finalBlob,
+                duration: replayDurationRef.current,
+                timestamp: new Date()
+            };
+
+            setSavedClips(prev => [newClip, ...prev]);
+
+            setTrimMessage(`Clip saved to library!`);
+            setTimeout(() => setTrimMessage(null), 3000);
+
+        } catch (err) {
+            console.error("Save Replay Error:", err);
+            setTrimMessage("Save Failed: " + err.message);
+        }
     };
 
     const saveReplayRef = useRef(saveReplay);
@@ -714,6 +907,16 @@ function App() {
 
     return (
         <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col font-sans selection:bg-indigo-500 selection:text-white">
+
+            {/* Countdown Overlay */}
+            {countdown !== null && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
+                    <div className="text-9xl font-black text-white animate-bounce drop-shadow-[0_0_50px_rgba(255,255,255,0.5)]">
+                        {countdown}
+                    </div>
+                </div>
+            )}
+
             {/* Background Ambience */}
             <div className="fixed inset-0 pointer-events-none">
                 <div className="absolute top-[-10%] left-[-10%] w-96 h-96 bg-purple-600/20 rounded-full blur-[100px]" />
@@ -770,16 +973,35 @@ function App() {
                             {!isRecording && !replayBufferActive && (
                                 <div className="flex gap-2 mb-4 bg-slate-900/50 p-1 rounded-lg border border-slate-700">
                                     <button
-                                        onClick={() => setIsReplayMode(false)}
+                                        onClick={() => {
+                                            setIsReplayMode(false);
+                                            handleStopRecording(); // Stop buffer if running
+                                        }}
                                         className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${!isReplayMode ? 'bg-slate-700 text-white' : 'text-slate-500 hover:text-slate-300'}`}
                                     >
-                                        Standard
+                                        Standard Recording
                                     </button>
                                     <button
-                                        onClick={() => setIsReplayMode(true)}
+                                        onClick={() => {
+                                            setIsReplayMode(true);
+                                            // Auto-start buffer logic handled below or via effect, but simpler here:
+                                            if (window.electronAPI.getSources && window.electronAPI.getCurrentScreenId) {
+                                                Promise.all([window.electronAPI.getSources(), window.electronAPI.getCurrentScreenId()])
+                                                    .then(([sources, currentId]) => {
+                                                        const target = sources.find(s => s.id === currentId) || sources[0];
+                                                        handleStartRecording(target);
+                                                    })
+                                                    .catch(err => {
+                                                        console.error("Auto-start buffer failed:", err);
+                                                        // Fallback manual will be shown
+                                                    });
+                                            } else {
+                                                handleStartRecording(selectedSource);
+                                            }
+                                        }}
                                         className={`px-3 py-1 text-xs font-bold rounded-md transition-all flex items-center gap-1 ${isReplayMode ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:text-slate-300'}`}
                                     >
-                                        <Rewind className="w-3 h-3" /> Flashback
+                                        <Rewind className="w-3 h-3" /> Flashback Mode
                                     </button>
                                 </div>
                             )}
@@ -790,23 +1012,25 @@ function App() {
                                         {replayBufferActive ? 'Flashback Active' : 'Flashback Ready'}
                                     </div>
                                     <div className="flex items-center gap-2">
-                                        {[30, 60, 90, 180].map(dur => (
-                                            <button
-                                                key={dur}
-                                                onClick={() => setReplayDuration(dur)}
-                                                className={`px-3 py-1 rounded text-xs font-bold border transition-all
+                                        <div className="flex items-center gap-2">
+                                            {[30, 60].map(dur => (
+                                                <button
+                                                    key={dur}
+                                                    onClick={() => setReplayDuration(dur)}
+                                                    className={`px-3 py-1 rounded text-xs font-bold border transition-all
                                                     ${replayDuration === dur
-                                                        ? 'bg-indigo-500 border-indigo-500 text-white'
-                                                        : 'border-slate-700 text-slate-400 hover:border-slate-500'
-                                                    }
+                                                            ? 'bg-indigo-500 border-indigo-500 text-white'
+                                                            : 'border-slate-700 text-slate-400 hover:border-slate-500'
+                                                        }
                                                 `}
-                                            >
-                                                {dur < 60 ? `${dur}s` : `${dur / 60}m${dur % 60 ? '30s' : ''}`}
-                                            </button>
-                                        ))}
-                                    </div>
-                                    <div className="text-[10px] text-slate-500 mt-1">
-                                        Use <span className="text-slate-300 font-mono">Alt+Shift+S</span> to save last {replayDuration < 60 ? `${replayDuration}s` : `${replayDuration / 60}m`}
+                                                >
+                                                    {dur}s Back
+                                                </button>
+                                            ))}
+                                        </div>
+                                        <div className="text-[10px] text-slate-500 mt-1">
+                                            Use <span className="text-slate-300 font-mono">Alt+Shift+S</span> to save last {replayDuration < 60 ? `${replayDuration}s` : `${replayDuration / 60}m`}
+                                        </div>
                                     </div>
                                 </div>
                             ) : (
@@ -998,19 +1222,7 @@ function App() {
 
                         {/* Main Action Buttons */}
                         <div className="flex justify-center pt-2">
-                            {isRecording || replayBufferActive ? (
-                                <button
-                                    onClick={handleStopRecording}
-                                    className={`flex items-center gap-3 px-8 py-4 rounded-2xl font-semibold shadow-lg transition-all transform hover:scale-[1.02] active:scale-[0.98]
-                                        ${isReplayMode
-                                            ? 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-500/30'
-                                            : 'bg-red-500 hover:bg-red-600 shadow-red-500/30'
-                                        } text-white`}
-                                >
-                                    <Square className="w-5 h-5 fill-current" />
-                                    {isReplayMode ? 'Stop Flashback' : 'Stop Recording'}
-                                </button>
-                            ) : previewUrl ? (
+                            {previewUrl ? (
                                 <div className="flex gap-4">
                                     <button
                                         onClick={handleDownload}
@@ -1027,6 +1239,35 @@ function App() {
                                         New Recording
                                     </button>
                                 </div>
+                            ) : isReplayMode ? (
+                                <div className="flex gap-4 w-full">
+                                    <button
+                                        onClick={() => saveReplay()}
+                                        disabled={!replayBufferActive}
+                                        className={`flex-1 flex items-center justify-center gap-3 px-6 py-4 rounded-2xl font-semibold shadow-lg transition-all transform hover:scale-[1.02] active:scale-[0.98]
+                                            ${replayBufferActive ? 'bg-indigo-600 hover:bg-indigo-700 cursor-pointer shadow-indigo-500/30' : 'bg-slate-700 text-slate-400 cursor-not-allowed'}
+                                            text-white`}
+                                    >
+                                        <Download className="w-5 h-5" />
+                                        {replayBufferActive ? 'Save Flashback' : 'Buffering...'}
+                                    </button>
+                                    <button
+                                        onClick={handleStopRecording}
+                                        className="flex items-center justify-center gap-2 px-6 py-4 bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 rounded-2xl font-semibold transition-all"
+                                        title="Exit Flashback Mode"
+                                    >
+                                        <Square className="w-5 h-5 fill-current" />
+                                    </button>
+                                </div>
+                            ) : isRecording ? (
+                                <button
+                                    onClick={handleStopRecording}
+                                    className="flex items-center gap-3 px-8 py-4 rounded-2xl font-semibold shadow-lg transition-all transform hover:scale-[1.02] active:scale-[0.98]
+                                        bg-red-500 hover:bg-red-600 shadow-red-500/30 text-white"
+                                >
+                                    <Square className="w-5 h-5 fill-current" />
+                                    Stop Recording
+                                </button>
                             ) : (
                                 <button
                                     onClick={() => handleStartRecording(null)}
@@ -1036,7 +1277,7 @@ function App() {
                                     disabled={!selectedSource}
                                 >
                                     <div className={`w-3 h-3 rounded-full ${selectedSource ? 'bg-red-500 animate-pulse' : 'bg-slate-500'}`} />
-                                    {isReplayMode ? 'Start Flashback' : 'Start Recording'}
+                                    Start Recording
                                 </button>
                             )}
                         </div>
@@ -1046,58 +1287,187 @@ function App() {
                                 {error}
                             </div>
                         )}
+
+                        {/* Saved Clips Library */}
+                        {savedClips.length > 0 && !previewUrl && (
+                            <div className="pt-4 border-t border-slate-700/50">
+                                <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">Saved Clips</h3>
+                                <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
+                                    {savedClips.map((clip) => (
+                                        <div key={clip.id} className="flex items-center gap-4 p-3 bg-slate-800/50 rounded-xl border border-slate-700/50 group hover:border-indigo-500/30 transition-all">
+                                            <div className="relative w-24 h-16 bg-black rounded-lg overflow-hidden shrink-0">
+                                                <video src={clip.url} className="w-full h-full object-cover" />
+                                                <div className="absolute inset-0 flex items-center justify-center bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                    <Play className="w-6 h-6 text-white" />
+                                                </div>
+                                            </div>
+                                            <div className="flex-1 min-w-0">
+                                                <div className="font-medium text-slate-200 truncate">Flashback Clip</div>
+                                                <div className="text-xs text-slate-500 flex items-center gap-2 mt-1">
+                                                    <Clock className="w-3 h-3" />
+                                                    {clip.timestamp.toLocaleTimeString()}
+                                                    <span className="w-1 h-1 bg-slate-600 rounded-full" />
+                                                    {clip.duration}s
+                                                </div>
+                                            </div>
+                                            <div className="flex items-center gap-2">
+                                                <button
+                                                    onClick={() => {
+                                                        const a = document.createElement('a');
+                                                        a.href = clip.url;
+                                                        a.download = `flashback-${clip.id}.webm`;
+                                                        document.body.appendChild(a);
+                                                        a.click();
+                                                        document.body.removeChild(a);
+                                                    }}
+                                                    className="p-2 text-slate-400 hover:text-indigo-400 hover:bg-indigo-500/10 rounded-lg transition-colors"
+                                                    title="Download"
+                                                >
+                                                    <Download className="w-4 h-4" />
+                                                </button>
+                                                <button
+                                                    onClick={() => setSavedClips(prev => prev.filter(c => c.id !== clip.id))}
+                                                    className="p-2 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+                                                    title="Delete"
+                                                >
+                                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /></svg>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
                     </div>
                 </div>
-            </main>
+            </main >
 
             {/* Source Selection Modal */}
-            {sourceSelectionModal && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-                    <div className="bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-3xl max-h-[80vh] flex flex-col">
-                        <div className="p-6 border-b border-slate-700 flex justify-between items-center">
-                            <h2 className="text-xl font-bold text-white">Select Screen</h2>
-                            <button onClick={() => setSourceSelectionModal(null)} className="text-slate-400 hover:text-white transition-colors">✕</button>
-                        </div>
-                        <div className="p-6 overflow-y-auto grid grid-cols-2 gap-4">
-                            {sourceSelectionModal.map(src => (
-                                <button
-                                    key={src.id}
-                                    onClick={() => selectSource(src)}
-                                    className="group flex flex-col gap-3 p-4 rounded-xl border border-slate-700 bg-slate-900/50 hover:border-indigo-500 hover:bg-indigo-500/5 transition-all text-left"
-                                >
-                                    <img src={src.thumbnail} alt={src.name} className="w-full aspect-video object-cover rounded-lg border border-slate-700 group-hover:border-indigo-500/50" />
-                                    <span className="font-medium text-slate-200 group-hover:text-indigo-400 truncate w-full">{src.name}</span>
-                                </button>
-                            ))}
+            {
+                sourceSelectionModal && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+                        <div className="bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-3xl max-h-[80vh] flex flex-col">
+                            <div className="p-6 border-b border-slate-700 flex justify-between items-center">
+                                <h2 className="text-xl font-bold text-white">Select Screen</h2>
+                                <button onClick={() => setSourceSelectionModal(null)} className="text-slate-400 hover:text-white transition-colors">✕</button>
+                            </div>
+                            <div className="p-6 overflow-y-auto grid grid-cols-2 gap-4">
+                                {sourceSelectionModal.map(src => (
+                                    <button
+                                        key={src.id}
+                                        onClick={() => selectSource(src)}
+                                        className="group flex flex-col gap-3 p-4 rounded-xl border border-slate-700 bg-slate-900/50 hover:border-indigo-500 hover:bg-indigo-500/5 transition-all text-left"
+                                    >
+                                        <img src={src.thumbnail} alt={src.name} className="w-full aspect-video object-cover rounded-lg border border-slate-700 group-hover:border-indigo-500/50" />
+                                        <span className="font-medium text-slate-200 group-hover:text-indigo-400 truncate w-full">{src.name}</span>
+                                    </button>
+                                ))}
+                            </div>
                         </div>
                     </div>
-                </div>
-            )}
+                )
+            }
 
             {/* Settings Modal */}
-            {showSettings && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-                    <div className="bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-md flex flex-col overflow-hidden">
-                        <div className="p-6 border-b border-slate-700 flex justify-between items-center bg-slate-800/60">
-                            <h2 className="text-xl font-bold text-white flex items-center gap-2">
-                                <Settings className="w-5 h-5" /> Settings
-                            </h2>
-                            <button onClick={() => setShowSettings(false)} className="text-slate-400 hover:text-white transition-colors">✕</button>
-                        </div>
-                        <div className="p-6 space-y-4">
-                            <div>
-                                <label className="block text-sm font-medium text-slate-300 mb-2">Google Gemini API Key</label>
-                                <input
-                                    type="password"
-                                    value={apiKey}
-                                    onChange={(e) => setApiKey(e.target.value)}
-                                    placeholder="AI..."
-                                    className="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-slate-200 focus:outline-none focus:border-indigo-500 transition-colors"
-                                />
-                                <p className="text-xs text-slate-500 mt-2">
-                                    Required for AI Analysis features. Get a free key at <a href="#" onClick={() => openShare('https://aistudio.google.com/app/apikey')} className="text-indigo-400 hover:underline">Google AI Studio</a>.
-                                    The key is stored locally on your device.
-                                </p>
+            {
+                showSettings && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+                        <div className="bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-md flex flex-col overflow-hidden">
+                            <div className="p-6 border-b border-slate-700 flex justify-between items-center bg-slate-800/60">
+                                <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                                    <Settings className="w-5 h-5" /> Settings
+                                </h2>
+                                <button onClick={() => setShowSettings(false)} className="text-slate-400 hover:text-white transition-colors">✕</button>
+                            </div>
+                            <div className="p-6 space-y-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-300 mb-2">Google Gemini API Key</label>
+                                    <input
+                                        type="password"
+                                        value={apiKey}
+                                        onChange={(e) => setApiKey(e.target.value)}
+                                        placeholder="AI..."
+                                        className="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-slate-200 focus:outline-none focus:border-indigo-500 transition-colors"
+                                    />
+                                    <p className="text-xs text-slate-500 mt-2">
+                                        Required for AI Analysis features. Get a free key at <a href="#" onClick={() => openShare('https://aistudio.google.com/app/apikey')} className="text-indigo-400 hover:underline">Google AI Studio</a>.
+                                        The key is stored locally on your device.
+                                    </p>
+                                </div>
+                            </div>
+
+                            <div className="pt-4 border-t border-slate-700">
+                                <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">Audio Settings</h3>
+
+                                <div className="space-y-4">
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-300 mb-2">Microphone Source</label>
+                                        <select
+                                            value={selectedMicId}
+                                            onChange={(e) => setSelectedMicId(e.target.value)}
+                                            className="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-slate-200 focus:outline-none focus:border-indigo-500 transition-colors"
+                                        >
+                                            <option value="default">Default Microphone</option>
+                                            {audioDevices.map(device => (
+                                                <option key={device.deviceId} value={device.deviceId}>
+                                                    {device.label || `Microphone ${device.deviceId.slice(0, 5)}...`}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-300 mb-2">Sound Quality (Bitrate)</label>
+                                        <select
+                                            value={audioBitrate}
+                                            onChange={(e) => setAudioBitrate(Number(e.target.value))}
+                                            className="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-slate-200 focus:outline-none focus:border-indigo-500 transition-colors"
+                                        >
+                                            <option value="64000">Low (64 kbps)</option>
+                                            <option value="128000">Standard (128 kbps)</option>
+                                            <option value="192000">High (192 kbps)</option>
+                                            <option value="256000">Ultra (256 kbps)</option>
+                                            <option value="320000">Studio (320 kbps)</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="pt-4 border-t border-slate-700">
+                                <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">Video Quality</h3>
+
+                                <div className="space-y-4">
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-300 mb-2">Resolution</label>
+                                        <select
+                                            value={videoResolution}
+                                            onChange={(e) => setVideoResolution(e.target.value)}
+                                            className="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-slate-200 focus:outline-none focus:border-indigo-500 transition-colors"
+                                        >
+                                            <option value="4k">4K (2160p)</option>
+                                            <option value="2k">2K (1440p)</option>
+                                            <option value="1080p">Full HD (1080p)</option>
+                                            <option value="720p">HD (720p)</option>
+                                            <option value="480p">SD (480p)</option>
+                                        </select>
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-300 mb-2">Frame Rate</label>
+                                        <div className="flex bg-slate-900 border border-slate-700 rounded-lg p-1">
+                                            {[30, 60, 0].map(fps => (
+                                                <button
+                                                    key={fps}
+                                                    onClick={() => setFrameRate(fps)}
+                                                    className={`flex-1 py-2 text-sm font-medium rounded-md transition-all
+                                                        ${frameRate === fps ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200'}`}
+                                                >
+                                                    {fps === 0 ? 'Max / Native' : `${fps} FPS`}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                         <div className="p-6 border-t border-slate-700 flex justify-end">
@@ -1109,8 +1479,7 @@ function App() {
                             </button>
                         </div>
                     </div>
-                </div>
-            )}
+                )}
         </div>
     )
 }

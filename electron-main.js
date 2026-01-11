@@ -44,6 +44,10 @@ function createWindow() {
       overlayWindow.close();
       overlayWindow = null;
     }
+    if (selectionWindow) {
+      selectionWindow.close();
+      selectionWindow = null;
+    }
   });
 
   if (app.isPackaged) {
@@ -110,12 +114,13 @@ function createWindow() {
 
   ipcMain.handle('SELECT_AREA', async () => {
     return new Promise((resolve) => {
-      const primaryDisplay = screen.getPrimaryDisplay();
-      const { width, height } = primaryDisplay.bounds;
+      const cursorPoint = screen.getCursorScreenPoint();
+      const targetDisplay = screen.getDisplayNearestPoint(cursorPoint);
+      const { x, y, width, height } = targetDisplay.bounds;
 
       selectionWindow = new BrowserWindow({
-        x: primaryDisplay.bounds.x,
-        y: primaryDisplay.bounds.y,
+        x: x,
+        y: y,
         width: width,
         height: height,
         frame: false,
@@ -125,7 +130,7 @@ function createWindow() {
         enableLargerThanScreen: true,
         hasShadow: false,
         webPreferences: {
-          nodeIntegration: true, // For ipcRenderer in selection.html (simplest for this aux window)
+          nodeIntegration: true,
           contextIsolation: false
         }
       });
@@ -249,8 +254,12 @@ ipcMain.on('OVERLAY_STOP_CLICKED', () => {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
+  if (selectionWindow) { selectionWindow.close(); selectionWindow = null; }
+  if (overlayWindow) { overlayWindow.close(); overlayWindow = null; }
 });
 
 app.on('window-all-closed', () => {
+  if (selectionWindow) { selectionWindow.close(); selectionWindow = null; }
+  if (overlayWindow) { overlayWindow.close(); overlayWindow = null; }
   if (process.platform !== 'darwin') app.quit();
 });

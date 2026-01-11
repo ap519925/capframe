@@ -44,6 +44,12 @@
       "overlay.html",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "node_modules/ffmpeg-static/ffmpeg.exe",
+        "to": "ffmpeg.exe"
+      }
+    ],
     "directories": {
       "output": "release"
     },
