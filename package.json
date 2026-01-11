@@ -1,7 +1,7 @@
 {
   "name": "capframe",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "main": "electron-main.js",
   "author": "User",
@@ -38,6 +38,7 @@
       "electron-main.js",
       "preload.js",
       "selection.html",
+      "overlay.html",
       "package.json"
     ],
     "directories": {

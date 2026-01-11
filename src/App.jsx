@@ -52,6 +52,8 @@ function App() {
     const replayBufferActiveRef = useRef(replayBufferActive);
     const replayDurationRef = useRef(replayDuration);
 
+    const initialChunkRef = useRef(null);
+
     useEffect(() => {
         isRecordingRef.current = isRecording;
         selectedSourceRef.current = selectedSource;
@@ -155,19 +157,23 @@ function App() {
             setPreviewUrl(null);
             setAiAnalysis(null); // Reset AI
             setTrimMessage(null); // Reset Trim
+            initialChunkRef.current = null; // Reset Header
 
-            setAiAnalysis(null); // Reset AI
-            setTrimMessage(null); // Reset Trim
-
-            // 1. Get Video Stream
+            // 1. Get Video Stream (+ System Audio via constraints)
             let videoConstraints;
+            let audioConstraints = false; // Default to no system audio
+
+            let activeSourceId = sourceToUse.id;
+
             if (sourceToUse.id === 'area') {
                 const sources = await window.electronAPI.getSources();
                 const screenSource = sources[0];
+                activeSourceId = screenSource.id; // Correct ID for Area mode
+
                 videoConstraints = {
                     mandatory: {
                         chromeMediaSource: 'desktop',
-                        chromeMediaSourceId: screenSource.id,
+                        chromeMediaSourceId: activeSourceId,
                         maxWidth: 4000, maxHeight: 4000,
                         minFrameRate: 60, maxFrameRate: 60
                     }
@@ -176,46 +182,52 @@ function App() {
                 videoConstraints = {
                     mandatory: {
                         chromeMediaSource: 'desktop',
-                        chromeMediaSourceId: sourceToUse.id,
+                        chromeMediaSourceId: activeSourceId,
                         maxWidth: 3840, maxHeight: 2160,
                         minFrameRate: 60, maxFrameRate: 60
                     }
                 };
             }
 
+            if (systemAudioEnabled) {
+                audioConstraints = {
+                    mandatory: {
+                        chromeMediaSource: 'desktop',
+                        chromeMediaSourceId: activeSourceId
+                    }
+                };
+            }
+
             let videoStream = await navigator.mediaDevices.getUserMedia({
-                audio: false,
+                audio: audioConstraints,
                 video: videoConstraints
             });
 
             // Crop if needed
             if (sourceToUse.id === 'area' && sourceToUse.rect) {
-                videoStream = await createCroppedStream(videoStream, sourceToUse.rect);
+                // When we scale/crop, we lose the audio track from the original videoStream if we just take canvas stream
+                // So we need to preserve it.
+                const croppedVideoStream = await createCroppedStream(videoStream, sourceToUse.rect);
+                // The cropped stream has no audio. We add it back later if main stream had it.
+                // We keep 'videoStream' as the source of audio.
+                // But we use 'croppedVideoStream' for video tracks.
+                // Actually, let's swap the video track.
+                const combined = new MediaStream();
+                croppedVideoStream.getVideoTracks().forEach(t => combined.addTrack(t));
+                videoStream.getAudioTracks().forEach(t => combined.addTrack(t));
+                videoStream = combined;
             }
 
-            // 2. Get Audio Streams (System + Mic) and Mix
+            // 2. Mix Mic Audio if enabled
             const audioContext = new AudioContext();
             const dest = audioContext.createMediaStreamDestination();
-            let hasAudio = false;
+            let hasAudioMixing = false;
 
-            if (systemAudioEnabled) {
-                try {
-                    const systemStream = await navigator.mediaDevices.getUserMedia({
-                        audio: {
-                            mandatory: {
-                                chromeMediaSource: 'desktop'
-                            }
-                        },
-                        video: false
-                    });
-                    if (systemStream.getAudioTracks().length > 0) {
-                        const src = audioContext.createMediaStreamSource(systemStream);
-                        src.connect(dest);
-                        hasAudio = true;
-                    }
-                } catch (e) {
-                    console.warn("System audio capture failed:", e);
-                }
+            // Verify if we got system audio from the main call
+            if (videoStream.getAudioTracks().length > 0) {
+                const sysSrc = audioContext.createMediaStreamSource(videoStream);
+                sysSrc.connect(dest);
+                hasAudioMixing = true;
             }
 
             if (micEnabled) {
@@ -225,21 +237,25 @@ function App() {
                         video: false
                     });
                     if (micStream.getAudioTracks().length > 0) {
-                        const src = audioContext.createMediaStreamSource(micStream);
-                        src.connect(dest);
-                        hasAudio = true;
+                        const micSrc = audioContext.createMediaStreamSource(micStream);
+                        micSrc.connect(dest);
+                        hasAudioMixing = true;
                     }
                 } catch (e) {
                     console.warn("Mic capture failed:", e);
                 }
             }
 
-            // 3. Combine Video + Mixed Audio
+            // 3. Final Stream Assembly
             const finalStream = new MediaStream();
             videoStream.getVideoTracks().forEach(track => finalStream.addTrack(track));
 
-            if (hasAudio) {
+            if (hasAudioMixing) {
+                // Use the mixed audio track
                 dest.stream.getAudioTracks().forEach(track => finalStream.addTrack(track));
+            } else if (videoStream.getAudioTracks().length > 0) {
+                // If we didn't use audioContext mix for some reason but have system audio (e.g. mic was off), use it directly
+                // But above logic covers this.
             }
 
             setStream(finalStream);
@@ -258,6 +274,12 @@ function App() {
                 mediaRecorder.ondataavailable = (event) => {
                     if (event.data.size > 0) {
                         const now = Date.now();
+
+                        // Capture Initialization Segment (Header)
+                        if (!initialChunkRef.current) {
+                            initialChunkRef.current = event.data;
+                        }
+
                         replayChunksRef.current.push({ data: event.data, timestamp: now });
 
                         // Prune old chunks (keep buffer + 10s extra safety)
@@ -270,6 +292,7 @@ function App() {
 
                 mediaRecorder.onstop = () => {
                     setReplayBufferActive(false);
+                    setIsRecording(false);
                     if (window.electronAPI && window.electronAPI.hideOverlay) window.electronAPI.hideOverlay();
                     if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
                 };
@@ -331,13 +354,28 @@ function App() {
         const cutoff = now - (replayDurationRef.current * 1000);
 
         // Filter chunks that overlap with the time window
-        // Note: This is approximate as valid chunks might start before cutoff
         const validChunks = replayChunksRef.current
             .filter(chunk => chunk.timestamp >= cutoff)
             .map(c => c.data);
 
-        // If we don't have enough, maybe take all?
-        const finalChunks = validChunks.length > 0 ? validChunks : replayChunksRef.current.map(c => c.data);
+        // Ensure we have the header chunk
+        let finalChunks = [];
+        if (initialChunkRef.current) {
+            finalChunks.push(initialChunkRef.current);
+        }
+
+        // Add valid chunks, avoiding duplicate of header
+        validChunks.forEach(chunk => {
+            if (chunk !== initialChunkRef.current) {
+                finalChunks.push(chunk);
+            }
+        });
+
+        // Fallback if nothing matches time (e.g. very short starting session)
+        if (finalChunks.length === 0 && replayChunksRef.current.length > 0) {
+            finalChunks = replayChunksRef.current.map(c => c.data);
+        }
+        // If we only have header, that's fine, it will just be short.
 
         const blob = new Blob(finalChunks, { type: 'video/webm' });
         const url = URL.createObjectURL(blob);

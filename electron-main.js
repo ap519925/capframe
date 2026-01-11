@@ -26,6 +26,15 @@ function createWindow() {
     icon: path.join(__dirname, app.isPackaged ? 'dist/icon.png' : 'public/icon.png')
   });
 
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+    if (overlayWindow) {
+      overlayWindow.close();
+      overlayWindow = null;
+    }
+    // app.quit() is called by window-all-closed event which will trigger after this
+  });
+
   if (app.isPackaged) {
     mainWindow.loadFile(path.join(__dirname, 'dist', 'index.html'));
   } else {
