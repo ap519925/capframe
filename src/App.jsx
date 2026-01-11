@@ -1,7 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Monitor, Crop, CheckCircle, Square, Play, Download, Settings, Mic, MicOff, Video, Sliders, Share2, Youtube, Facebook, UploadCloud, Sparkles, Rewind, Clock, Laptop } from 'lucide-react';
 
+import { GoogleGenerativeAI } from "@google/generative-ai";
+
 const SocialIcon = ({ type, className }) => {
+    // ... (keep existing)
     if (type === 'tiktok') {
         return (
             <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
@@ -30,6 +33,10 @@ function App() {
     const [selectedSource, setSelectedSource] = useState(null);
     const [error, setError] = useState(null);
     const [sourceSelectionModal, setSourceSelectionModal] = useState(null);
+
+    // Settings logic
+    const [showSettings, setShowSettings] = useState(false);
+    const [apiKey, setApiKey] = useState(() => localStorage.getItem('GEMINI_API_KEY') || '');
 
     // AI Features State
     const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -61,28 +68,184 @@ function App() {
         replayDurationRef.current = replayDuration;
     }, [isRecording, selectedSource, replayBufferActive, replayDuration]);
 
+    useEffect(() => {
+        if (apiKey) localStorage.setItem('GEMINI_API_KEY', apiKey);
+    }, [apiKey]);
+
     const formatTime = (seconds) => {
         const mins = Math.floor(seconds / 60);
         const secs = seconds % 60;
         return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
     };
 
-    const handleAnalyzeAI = async () => {
-        setIsAnalyzing(true);
-        // Simulator AI Latency
-        setTimeout(() => {
-            setAiAnalysis({
-                title: "Screen Recording Session 1",
-                summary: "This recording appears to be a desktop capture session. The activity levels suggest focused work or demonstration.",
-                tags: ["Productivity", "Screen Capture", "Work"]
+    const extractFrames = async (videoBlob, numFrames = 3) => {
+        const video = document.createElement('video');
+        video.src = URL.createObjectURL(videoBlob);
+
+        await new Promise(r => video.onloadedmetadata = r);
+
+        const frames = [];
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+
+        const duration = video.duration;
+        const interval = duration / (numFrames + 1);
+
+        for (let i = 1; i <= numFrames; i++) {
+            video.currentTime = interval * i;
+            await new Promise(r => video.onseeked = r);
+            ctx.drawImage(video, 0, 0);
+            const base64 = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+            frames.push({
+                inlineData: {
+                    data: base64,
+                    mimeType: "image/jpeg"
+                }
             });
-            setIsAnalyzing(false);
-        }, 2000);
+        }
+        return frames;
     };
 
+    const handleAnalyzeAI = async () => {
+        if (!apiKey) {
+            setShowSettings(true);
+            return;
+        }
+
+        setIsAnalyzing(true);
+        setError(null);
+        try {
+            const blob = new Blob(recordedChunks, { type: 'video/webm' });
+            const frames = await extractFrames(blob);
+
+            const genAI = new GoogleGenerativeAI(apiKey);
+            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+            const prompt = "Analyze these screenshots from a screen recording. Provide a JSON response with: title (short catchy title), summary (2 sentences), and tags (array of 3 keywords). format: { \"title\": \"...\", \"summary\": \"...\", \"tags\": [...] }";
+
+            const result = await model.generateContent([prompt, ...frames]);
+            const response = await result.response;
+            const text = response.text();
+
+            // Clean markdown
+            const jsonStr = text.replace(/```json/g, '').replace(/```/g, '').trim();
+            const data = JSON.parse(jsonStr);
+
+            setAiAnalysis(data);
+        } catch (err) {
+            console.error(err);
+            setError("AI Analysis failed: " + err.message);
+        } finally {
+            setIsAnalyzing(false);
+        }
+    };
+
+    const [suggestedTrim, setSuggestedTrim] = useState(null);
+
     const handleSmartTrim = async () => {
-        // Placeholder: Real implementation requires ffmpeg.wasm
-        alert("Smart Trim is currently in development. Please use an external editor.");
+        if (!apiKey) {
+            setShowSettings(true);
+            return;
+        }
+
+        setIsTrimming(true);
+        setTrimMessage(null);
+        setSuggestedTrim(null);
+
+        try {
+            const blob = new Blob(recordedChunks, { type: 'video/webm' });
+
+            // Extract 10 frames from first 10 seconds
+            const frames = await extractFrames(blob, 10); // Logic inside extractFrames needs update to handle interval seeking if it doesn't already
+            // Actually, my extractFrames does "interval = duration / (numFrames + 1)". 
+            // Better to make a specific extraction for start.
+
+            // Custom extraction for start analysis
+            const video = document.createElement('video');
+            video.src = URL.createObjectURL(blob);
+            await new Promise(r => video.onloadedmetadata = r);
+
+            const startFrames = [];
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+
+            // Grab frames at 0, 1, 2... up to min(10, duration)
+            const checkDuration = Math.min(10, video.duration);
+            for (let i = 0; i < checkDuration; i++) {
+                video.currentTime = i;
+                await new Promise(r => video.onseeked = r);
+                ctx.drawImage(video, 0, 0);
+                const base64 = canvas.toDataURL('image/jpeg', 0.5).split(',')[1]; // Lower quality for speed
+                startFrames.push({
+                    inlineData: { data: base64, mimeType: "image/jpeg" }
+                });
+            }
+
+            const genAI = new GoogleGenerativeAI(apiKey);
+            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+            const prompt = `Analyze these sequential frames taken at 1-second intervals from the start of a screen recording (0s, 1s, 2s...). 
+            Identify the timestamp (in seconds) where meaningful activity starts (e.g. mouse movement, typing, window opening). 
+            Ignore static screens or "starting recording" UI. 
+            If it starts immediately, return 0. 
+            Return JSON: { "start_time": number, "reason": "brief explanation" }`;
+
+            const result = await model.generateContent([prompt, ...startFrames]);
+            const response = await result.response;
+            const text = response.text();
+
+            const jsonStr = text.replace(/```json/g, '').replace(/```/g, '').trim();
+            const data = JSON.parse(jsonStr);
+
+            if (data.start_time > 0) {
+                setSuggestedTrim(data.start_time);
+                setTrimMessage(`AI suggests trimming the first ${data.start_time}s (${data.reason})`);
+            } else {
+                setTrimMessage("No trimming needed. Activity starts immediately.");
+            }
+
+        } catch (err) {
+            console.error("Trim Analysis Error:", err);
+            setError("Trim analysis failed: " + err.message);
+        } finally {
+            setIsTrimming(false);
+        }
+    };
+
+    const applyTrim = async () => {
+        if (!suggestedTrim || !window.electronAPI.trimVideo) return;
+
+        setIsTrimming(true);
+        try {
+            const blob = new Blob(recordedChunks, { type: 'video/webm' });
+            const arrayBuffer = await blob.arrayBuffer();
+            const video = document.createElement('video');
+            video.src = URL.createObjectURL(blob);
+            await new Promise(r => video.onloadedmetadata = r);
+            const duration = video.duration;
+
+            // Trim
+            const trimmedBuffer = await window.electronAPI.trimVideo(arrayBuffer, suggestedTrim, duration - suggestedTrim);
+
+            // Create new blob
+            const trimmedBlob = new Blob([trimmedBuffer], { type: 'video/webm' });
+            const newUrl = URL.createObjectURL(trimmedBlob);
+
+            setPreviewUrl(newUrl);
+            setRecordedChunks([trimmedBlob]); // Update chunks so "Save" uses trimmed
+            setTrimMessage(`Trimmed ${suggestedTrim}s successfully!`);
+            setSuggestedTrim(null);
+
+        } catch (err) {
+            console.error("Apply Trim Error:", err);
+            setError("Failed to apply trim: " + err.message);
+        } finally {
+            setIsTrimming(false);
+        }
     };
 
     const createCroppedStream = (originalStream, rect) => {
@@ -571,6 +734,13 @@ function App() {
                             </h1>
                         </div>
                         <div className="flex items-center gap-2">
+                            <button
+                                onClick={() => setShowSettings(true)}
+                                className={`p-2 rounded-full transition-all duration-300 ${!apiKey ? 'text-orange-400 bg-orange-500/10 animate-pulse' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}
+                                title="Settings"
+                            >
+                                <Settings className="w-5 h-5" />
+                            </button>
                             <div className="flex items-center gap-2">
                                 <button
                                     onClick={() => setSystemAudioEnabled(!systemAudioEnabled)}
@@ -748,8 +918,7 @@ function App() {
                                         <Sparkles className="w-4 h-4" /> AI Operations
                                     </h3>
                                     <div className="flex gap-2">
-                                        {/* Smart Trim Button Hidden until real implementation ready 
-                                        {!isTrimming && !trimMessage && (
+                                        {!isTrimming && !suggestedTrim && (
                                             <button
                                                 onClick={handleSmartTrim}
                                                 className="text-xs bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/30 px-3 py-1.5 rounded-lg font-medium transition-colors flex items-center gap-1"
@@ -757,7 +926,7 @@ function App() {
                                                 <Crop className="w-3 h-3" /> Smart Trim
                                             </button>
                                         )}
-                                        */}
+
                                         {!aiAnalysis && !isAnalyzing && (
                                             <button
                                                 onClick={handleAnalyzeAI}
@@ -780,7 +949,7 @@ function App() {
                                     </div>
                                 )}
 
-                                {isReplayMode && trimMessage && (
+                                {isReplayMode && trimMessage && !suggestedTrim && (
                                     <div className="mb-4 bg-indigo-500/10 border border-indigo-500/20 p-3 rounded-lg flex items-center gap-2 text-sm text-indigo-400 animate-in fade-in slide-in-from-top-2">
                                         <CheckCircle className="w-4 h-4" />
                                         {trimMessage}
@@ -788,9 +957,19 @@ function App() {
                                 )}
 
                                 {trimMessage && (
-                                    <div className="mb-4 bg-emerald-500/10 border border-emerald-500/20 p-3 rounded-lg flex items-center gap-2 text-sm text-emerald-400 animate-in fade-in slide-in-from-top-2">
-                                        <CheckCircle className="w-4 h-4" />
-                                        {trimMessage}
+                                    <div className="mb-4 bg-emerald-500/10 border border-emerald-500/20 p-3 rounded-lg flex items-center gap-2 text-sm text-emerald-400 animate-in fade-in slide-in-from-top-2 justify-between">
+                                        <div className="flex items-center gap-2">
+                                            <CheckCircle className="w-4 h-4" />
+                                            {trimMessage}
+                                        </div>
+                                        {suggestedTrim && (
+                                            <button
+                                                onClick={applyTrim}
+                                                className="text-xs bg-emerald-500 hover:bg-emerald-600 text-white px-3 py-1 rounded-md font-bold transition-colors shadow-lg shadow-emerald-500/20"
+                                            >
+                                                Apply Cut
+                                            </button>
+                                        )}
                                     </div>
                                 )}
 
@@ -890,6 +1069,44 @@ function App() {
                                     <span className="font-medium text-slate-200 group-hover:text-indigo-400 truncate w-full">{src.name}</span>
                                 </button>
                             ))}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Settings Modal */}
+            {showSettings && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+                    <div className="bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-md flex flex-col overflow-hidden">
+                        <div className="p-6 border-b border-slate-700 flex justify-between items-center bg-slate-800/60">
+                            <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                                <Settings className="w-5 h-5" /> Settings
+                            </h2>
+                            <button onClick={() => setShowSettings(false)} className="text-slate-400 hover:text-white transition-colors">✕</button>
+                        </div>
+                        <div className="p-6 space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium text-slate-300 mb-2">Google Gemini API Key</label>
+                                <input
+                                    type="password"
+                                    value={apiKey}
+                                    onChange={(e) => setApiKey(e.target.value)}
+                                    placeholder="AI..."
+                                    className="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-slate-200 focus:outline-none focus:border-indigo-500 transition-colors"
+                                />
+                                <p className="text-xs text-slate-500 mt-2">
+                                    Required for AI Analysis features. Get a free key at <a href="#" onClick={() => openShare('https://aistudio.google.com/app/apikey')} className="text-indigo-400 hover:underline">Google AI Studio</a>.
+                                    The key is stored locally on your device.
+                                </p>
+                            </div>
+                        </div>
+                        <div className="p-6 border-t border-slate-700 flex justify-end">
+                            <button
+                                onClick={() => setShowSettings(false)}
+                                className="px-4 py-2 bg-indigo-500 hover:bg-indigo-600 text-white rounded-lg font-medium transition-colors"
+                            >
+                                Save & Close
+                            </button>
                         </div>
                     </div>
                 </div>

@@ -1,14 +1,26 @@
 import { app, BrowserWindow, ipcMain, desktopCapturer, session, screen, globalShortcut } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import fs from 'fs';
+import os from 'os';
+import ffmpeg from 'fluent-ffmpeg';
+import ffmpegPath from 'ffmpeg-static';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Configure FFmpeg Path
+const ffmpegBinary = app.isPackaged
+  ? path.join(process.resourcesPath, 'ffmpeg.exe')
+  : ffmpegPath;
+
+ffmpeg.setFfmpegPath(ffmpegBinary);
 
 let mainWindow;
 let selectionWindow;
 
 function createWindow() {
+  // ... (keep existing window creation)
   mainWindow = new BrowserWindow({
     width: 900,
     height: 700,
@@ -32,7 +44,6 @@ function createWindow() {
       overlayWindow.close();
       overlayWindow = null;
     }
-    // app.quit() is called by window-all-closed event which will trigger after this
   });
 
   if (app.isPackaged) {
@@ -48,15 +59,53 @@ function createWindow() {
       id: source.id,
       name: source.name,
       thumbnail: source.thumbnail.toDataURL(),
-      display_id: source.display_id // Note: display_id might not be standard property in all electron versions, but source.id usually contains it
+      display_id: source.display_id
     }));
   });
 
   ipcMain.handle('GET_CURRENT_SCREEN_ID', () => {
     const point = screen.getCursorScreenPoint();
     const display = screen.getDisplayNearestPoint(point);
-    // desktopCapturer source IDs are typically 'screen:display_id:0'
     return `screen:${display.id}:0`;
+  });
+
+  ipcMain.handle('TRIM_VIDEO', async (event, { arrayBuffer, startTime, duration }) => {
+    const tempInput = path.join(os.tmpdir(), `input-${Date.now()}.webm`);
+    const tempOutput = path.join(os.tmpdir(), `output-${Date.now()}.webm`);
+
+    try {
+      // Write buffer to disk
+      await fs.promises.writeFile(tempInput, Buffer.from(arrayBuffer));
+
+      // Run FFmpeg
+      await new Promise((resolve, reject) => {
+        ffmpeg(tempInput)
+          .setStartTime(startTime)
+          .setDuration(duration)
+          .output(tempOutput)
+          .videoCodec('copy')
+          .audioCodec('copy')
+          .on('end', resolve)
+          .on('error', reject)
+          .run();
+      });
+
+      // Read back
+      const trimmedBuffer = await fs.promises.readFile(tempOutput);
+
+      // Cleanup
+      fs.unlink(tempInput, () => { });
+      fs.unlink(tempOutput, () => { });
+
+      return trimmedBuffer;
+
+    } catch (error) {
+      console.error("Trim Error:", error);
+      // Cleanup on error
+      if (fs.existsSync(tempInput)) fs.unlink(tempInput, () => { });
+      if (fs.existsSync(tempOutput)) fs.unlink(tempOutput, () => { });
+      throw error;
+    }
   });
 
   ipcMain.handle('SELECT_AREA', async () => {
