@@ -89,20 +89,52 @@ function App() {
 
     // Countdown State
     const [countdown, setCountdown] = useState(null);
-
+    // Refs
     const mediaRecorderRef = useRef(null);
+    const recordingStartTimeRef = useRef(null);
     const timerRef = useRef(null);
-    const animationFrameRef = useRef(null);
+    const initialChunkRef = useRef(null); // For Flashback header
+    const replayDurationRef = useRef(replayDuration);
+    const replayBufferActiveRef = useRef(replayBufferActive);
+    const webcamPreviewRef = useRef(null); // For live preview UI
 
-    // Refs for hotkey logic
+    // Update refs when state changes
+    useEffect(() => { replayDurationRef.current = replayDuration; }, [replayDuration]);
+    useEffect(() => { replayBufferActiveRef.current = replayBufferActive; }, [replayBufferActive]);
+
+    // Webcam Preview Effect
+    useEffect(() => {
+        let stream = null;
+        if (webcamEnabled && !isRecording && !replayBufferActive) {
+            const startPreview = async () => {
+                try {
+                    // Check if device is still available or selected
+                    const constraints = {
+                        video: {
+                            deviceId: selectedWebcamId !== 'default' ? { exact: selectedWebcamId } : undefined,
+                            width: { ideal: 640 },
+                            height: { ideal: 360 } // Low res for preview is fine, or match setting
+                        }
+                    };
+                    stream = await navigator.mediaDevices.getUserMedia(constraints);
+                    if (webcamPreviewRef.current) {
+                        webcamPreviewRef.current.srcObject = stream;
+                    }
+                } catch (e) {
+                    console.error("Preview Webcam blocked/failed:", e);
+                }
+            };
+            startPreview();
+        }
+
+        return () => {
+            if (stream) {
+                stream.getTracks().forEach(t => t.stop());
+            }
+        };
+    }, [webcamEnabled, selectedWebcamId, isRecording, replayBufferActive]);
     const isRecordingRef = useRef(isRecording);
     const selectedSourceRef = useRef(selectedSource);
-    const replayBufferActiveRef = useRef(replayBufferActive);
-    const replayDurationRef = useRef(replayDuration);
-
-    const initialChunkRef = useRef(null);
-    const recordingStartTimeRef = useRef(0);
-
     useEffect(() => {
         isRecordingRef.current = isRecording;
         selectedSourceRef.current = selectedSource;
@@ -357,47 +389,54 @@ function App() {
     // --- Helper for Composed Stream (Webcam + Screen + Crop) ---
     const createComposedStream = (screenStream, webcamStream = null, cropRect = null) => {
         const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d', { alpha: false }); // Optimize for video
+        const ctx = canvas.getContext('2d', { alpha: false });
 
-        const screenVideo = document.createElement('video');
-        screenVideo.srcObject = screenStream;
-        screenVideo.muted = true;
-        screenVideo.play();
+        // Helper to create and safeguard video elements
+        const createVideoEl = (stream) => {
+            const v = document.createElement('video');
+            v.srcObject = stream;
+            v.muted = true;
+            // append to body hidden to ensure it plays on all browsers/electron versions
+            v.style.position = 'fixed';
+            v.style.top = '-9999px';
+            v.style.opacity = '0';
+            document.body.appendChild(v);
+            v.play().catch(e => console.error("Video play failed", e));
+            return v;
+        };
 
+        const screenVideo = createVideoEl(screenStream);
         let webcamVideo = null;
         if (webcamStream) {
-            webcamVideo = document.createElement('video');
-            webcamVideo.srcObject = webcamStream;
-            webcamVideo.muted = true;
-            webcamVideo.play();
+            webcamVideo = createVideoEl(webcamStream);
         }
 
-        // Setup dimensions once screen video is ready
-        const { width: sW, height: sH } = screenStream.getVideoTracks()[0].getSettings();
-
-        // Initial size guess
-        let width = cropRect ? cropRect.width : (sW || 1920);
-        let height = cropRect ? cropRect.height : (sH || 1080);
+        // We can't immediately know size, but we can guess or wait.
+        // For screen sharing, tracks often have settings immediately.
+        const settings = screenStream.getVideoTracks()[0].getSettings();
+        let width = cropRect ? cropRect.width : (settings.width || 1920);
+        let height = cropRect ? cropRect.height : (settings.height || 1080);
 
         canvas.width = width;
         canvas.height = height;
 
         const draw = () => {
-            if (!mediaRecorderRef.current || mediaRecorderRef.current.state === 'inactive') {
+            // Check if recording stopped (simple check via ref or checking streams)
+            // Actually, we should check if screenStream is active
+            if (screenStream.getTracks().every(t => t.readyState === 'ended')) {
                 // Cleanup
-                screenVideo.srcObject = null;
-                screenVideo.remove();
-                if (webcamVideo) {
-                    webcamVideo.srcObject = null;
-                    webcamVideo.remove();
-                }
+                if (webcamVideo) { document.body.removeChild(webcamVideo); webcamVideo = null; }
+                if (screenVideo) { document.body.removeChild(screenVideo); }
                 return;
             }
 
-            if (screenVideo.readyState === screenVideo.HAVE_ENOUGH_DATA) {
-                if (!cropRect && (canvas.width !== screenVideo.videoWidth || canvas.height !== screenVideo.videoHeight)) {
+            if (screenVideo.readyState >= 2) { // HAVE_CURRENT_DATA
+                // Auto-resize canvas if screen size changes (and not cropping)
+                if (!cropRect && (screenVideo.videoWidth && (canvas.width !== screenVideo.videoWidth || canvas.height !== screenVideo.videoHeight))) {
                     canvas.width = screenVideo.videoWidth;
                     canvas.height = screenVideo.videoHeight;
+                    width = canvas.width;
+                    height = canvas.height;
                 }
 
                 ctx.drawImage(
@@ -410,26 +449,32 @@ function App() {
                 );
 
                 // Draw Webcam Overlay
-                if (webcamVideo && webcamVideo.readyState === webcamVideo.HAVE_ENOUGH_DATA) {
-                    // Position: Bottom Right, 20% width
-                    const camW = canvas.width * 0.2;
-                    const camH = camW * (webcamVideo.videoHeight / webcamVideo.videoWidth); // keep aspect ratio
-                    const margin = 20;
-                    const camX = canvas.width - camW - margin;
-                    const camY = canvas.height - camH - margin;
+                if (webcamVideo && webcamVideo.readyState >= 2) {
+                    // PIP Logic: Bottom Right, 20% width
+                    const camW = width * 0.25; // Slightly larger: 25%
+                    const camH = camW * (webcamVideo.videoHeight / webcamVideo.videoWidth);
+                    const margin = 30;
+                    const camX = width - camW - margin;
+                    const camY = height - camH - margin;
 
-                    // Rounded corners/border for webcam
+                    // Shadow/Border background
                     ctx.save();
+                    ctx.shadowColor = "rgba(0,0,0,0.5)";
+                    ctx.shadowBlur = 20;
+
+                    // Clip Round Rect
                     ctx.beginPath();
-                    ctx.roundRect(camX, camY, camW, camH, 15);
+                    ctx.roundRect(camX, camY, camW, camH, 20);
                     ctx.clip();
+
+                    // Draw Video
                     ctx.drawImage(webcamVideo, camX, camY, camW, camH);
                     ctx.restore();
 
-                    // Optional Border
+                    // Border
                     ctx.beginPath();
-                    ctx.roundRect(camX, camY, camW, camH, 15);
-                    ctx.lineWidth = 4;
+                    ctx.roundRect(camX, camY, camW, camH, 20);
+                    ctx.lineWidth = 6;
                     ctx.strokeStyle = '#6366f1'; // Indigo-500
                     ctx.stroke();
                 }
@@ -439,11 +484,20 @@ function App() {
 
         requestAnimationFrame(draw);
 
+        // 60FPS output
         const stream = canvas.captureStream(frameRate || 60);
+
+        // Link stream stopping to cleanup
+        // Note: This cleanup might be redundant with the loop check but good for safety
+        stream.getVideoTracks()[0].onended = () => {
+            if (webcamVideo && webcamVideo.parentNode) document.body.removeChild(webcamVideo);
+            if (screenVideo && screenVideo.parentNode) document.body.removeChild(screenVideo);
+        };
+
         return stream;
     };
 
-    const handleStartRecording = async (providedSource = null) => {
+    const handleStartRecording = async (providedSource = null, forceFlashback = false) => {
         try {
             const sourceToUse = providedSource || selectedSource;
 
@@ -458,6 +512,12 @@ function App() {
 
             // Sync state for immediate logic
             const sourceId = sourceToUse.id;
+
+            // Determine mode
+            // If forceFlashback is true, use it. Otherwise use state.
+            // But state might be stale if we just set it. 
+            // We use the param to guide logic.
+            const isFlashback = forceFlashback || isReplayMode;
 
             // Start Countdown (UI State, not logic)
             // We defer visual "Recording" state until after countdown, but we do need to block multiple clicks
@@ -607,14 +667,7 @@ function App() {
             setStream(finalStream);
 
             // COUNTDOWN LOGIC
-            // Only countdown for standard recording, not replay mode (unless desired, but user asked for "recording starts")
-            // Assuming Flashback is always on/passive, so maybe no countdown needed? 
-            // The prompt says "before the recording starts", implying the active recording session.
-            // Let's do it for both to be safe/consistent, or check isReplayMode.
-            // Actually flashback mode buffer starts immediately usually. 
-            // Let's add countdown for Standard Mode mainly.
-
-            if (!isReplayMode) {
+            if (!isFlashback) {
                 setCountdown(2);
                 await new Promise(r => setTimeout(r, 1000));
                 setCountdown(1);
@@ -624,7 +677,7 @@ function App() {
 
             // Show Overlay NOW (after countdown)
             if (window.electronAPI && window.electronAPI.showOverlay) {
-                window.electronAPI.showOverlay(isReplayMode ? 'replay' : 'record');
+                window.electronAPI.showOverlay(isFlashback ? 'replay' : 'record');
             }
 
             // NOW set is recording
@@ -639,7 +692,7 @@ function App() {
             const mediaRecorder = new MediaRecorder(finalStream, options);
             mediaRecorderRef.current = mediaRecorder;
 
-            if (isReplayMode) {
+            if (isFlashback) {
                 // Replay Buffer Logic
                 replayChunksRef.current = [];
 
@@ -1025,69 +1078,106 @@ function App() {
 
                         {/* Status & Timer */}
                         {/* Status & Timer */}
-                        <div className="flex flex-col items-center justify-center space-y-2">
-                            {/* Replay Mode Toggle */}
+                        <div className="flex flex-col items-center justify-center space-y-4">
+
+                            {/* Webcam Preview Box */}
+                            {webcamEnabled && !isRecording && (
+                                <div className="relative group w-48 aspect-video bg-black rounded-xl overflow-hidden border-2 border-slate-700/50 shadow-lg mb-2">
+                                    <video
+                                        ref={webcamPreviewRef}
+                                        autoPlay
+                                        muted
+                                        className="w-full h-full object-cover transform scale-x-[-1]"
+                                    />
+                                    <div className="absolute top-2 right-2 flex gap-1">
+                                        <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.8)]" />
+                                    </div>
+                                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity bg-black/40">
+                                        <span className="text-xs font-medium text-white">Preview</span>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Flashback Mode Toggle */}
                             {!isRecording && !replayBufferActive && (
-                                <div className="flex gap-2 mb-4 bg-slate-900/50 p-1 rounded-lg border border-slate-700">
+                                <div className="flex items-center justify-between w-full bg-slate-800/40 p-4 rounded-xl border border-slate-700/50 mb-4">
+                                    <div className="flex items-center gap-3">
+                                        <div className={`p-2 rounded-lg ${isReplayMode ? 'bg-indigo-500/20 text-indigo-400' : 'bg-slate-700/30 text-slate-500'}`}>
+                                            <Rewind className="w-5 h-5" />
+                                        </div>
+                                        <div className="text-left">
+                                            <div className="text-sm font-bold text-slate-200">Flashback Mode</div>
+                                            <div className="text-xs text-slate-500">Buffer last {replayDuration}s</div>
+                                        </div>
+                                    </div>
                                     <button
                                         onClick={() => {
-                                            setIsReplayMode(false);
-                                            handleStopRecording(); // Stop buffer if running
-                                        }}
-                                        className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${!isReplayMode ? 'bg-slate-700 text-white' : 'text-slate-500 hover:text-slate-300'}`}
-                                    >
-                                        Standard Recording
-                                    </button>
-                                    <button
-                                        onClick={() => {
-                                            setIsReplayMode(true);
-                                            // Auto-start buffer logic handled below or via effect, but simpler here:
-                                            if (window.electronAPI.getSources && window.electronAPI.getCurrentScreenId) {
-                                                Promise.all([window.electronAPI.getSources(), window.electronAPI.getCurrentScreenId()])
-                                                    .then(([sources, currentId]) => {
-                                                        const target = sources.find(s => s.id === currentId) || sources[0];
-                                                        handleStartRecording(target);
-                                                    })
-                                                    .catch(err => {
-                                                        console.error("Auto-start buffer failed:", err);
-                                                        // Fallback manual will be shown
-                                                    });
+                                            const newMode = !isReplayMode;
+                                            setIsReplayMode(newMode);
+
+                                            if (newMode) {
+                                                // Start Buffering Immediately
+                                                if (window.electronAPI.getSources && window.electronAPI.getCurrentScreenId) {
+                                                    Promise.all([window.electronAPI.getSources(), window.electronAPI.getCurrentScreenId()])
+                                                        .then(([sources, currentId]) => {
+                                                            const target = sources.find(s => s.id === currentId) || sources[0];
+                                                            // We need to set this state to trigger the "start" logic correctly with the new mode
+                                                            // Actually, handleStartRecording checks "isReplayMode".
+                                                            // Since setState is async, we might need a useEffect or pass a flag.
+                                                            // Better: Setup the mode first, then trigger.
+                                                            // But handleStartRecording uses the *REF* isRecordingRef/replayBufferActiveRef maybe? 
+                                                            // No, it uses state 'isReplayMode'. 
+                                                            // So we rely on React re-render? No, inside the same event loop it's old.
+                                                            // We should update the handler to accept a mode override or wait.
+                                                            // SIMPLER: Just set state, and let a useEffect trigger it? 
+                                                            // Or just call it, but we need to ensure 'isReplayMode' state is true during execution.
+                                                            // Force param:
+                                                            handleStartRecording(target, true); // Add 'isFlashbackOverride' param to handleStartRecording?
+                                                        })
+                                                        .catch(err => console.error("Auto-buffer failed:", err));
+                                                } else {
+                                                    handleStartRecording(selectedSource, true);
+                                                }
                                             } else {
-                                                handleStartRecording(selectedSource);
+                                                handleStopRecording();
                                             }
                                         }}
-                                        className={`px-3 py-1 text-xs font-bold rounded-md transition-all flex items-center gap-1 ${isReplayMode ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:text-slate-300'}`}
+                                        className={`w-12 h-7 rounded-full p-1 transition-colors duration-300 ease-in-out border border-transparent ${isReplayMode ? 'bg-indigo-600' : 'bg-slate-700'}`}
                                     >
-                                        <Rewind className="w-3 h-3" /> Flashback Mode
+                                        <div className={`w-5 h-5 bg-white rounded-full shadow-md transform transition-transform duration-300 ${isReplayMode ? 'translate-x-5' : 'translate-x-0'}`} />
                                     </button>
                                 </div>
                             )}
 
                             {isReplayMode ? (
-                                <div className="min-h-[80px] flex flex-col items-center justify-center gap-2">
-                                    <div className={`text-xl font-medium tracking-wide ${replayBufferActive ? 'text-indigo-400' : 'text-slate-500'}`}>
-                                        {replayBufferActive ? 'Flashback Active' : 'Flashback Ready'}
+                                <div className="min-h-[80px] flex flex-col items-center justify-center gap-2 animate-in fade-in slide-in-from-bottom-2">
+                                    <div className={`text-xl font-medium tracking-wide flex items-center gap-2 ${replayBufferActive ? 'text-indigo-400' : 'text-slate-500'}`}>
+                                        {replayBufferActive ? (
+                                            <>
+                                                <span className="relative flex h-3 w-3">
+                                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
+                                                    <span className="relative inline-flex rounded-full h-3 w-3 bg-indigo-500"></span>
+                                                </span>
+                                                Buffering...
+                                            </>
+                                        ) : 'Starting Buffer...'}
                                     </div>
                                     <div className="flex items-center gap-2">
-                                        <div className="flex items-center gap-2">
+                                        <span className="text-xs text-slate-500 uppercase font-bold tracking-wider">Duration:</span>
+                                        <div className="flex items-center gap-1 bg-slate-800/50 p-1 rounded-lg border border-slate-700/50">
                                             {[30, 60].map(dur => (
                                                 <button
                                                     key={dur}
                                                     onClick={() => setReplayDuration(dur)}
-                                                    className={`px-3 py-1 rounded text-xs font-bold border transition-all
-                                                    ${replayDuration === dur
-                                                            ? 'bg-indigo-500 border-indigo-500 text-white'
-                                                            : 'border-slate-700 text-slate-400 hover:border-slate-500'
-                                                        }
-                                                `}
+                                                    className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${replayDuration === dur ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700/50'}`}
                                                 >
-                                                    {dur}s Back
+                                                    {dur}s
                                                 </button>
                                             ))}
                                         </div>
-                                        <div className="text-[10px] text-slate-500 mt-1">
-                                            Use <span className="text-slate-300 font-mono">Alt+Shift+S</span> to save last {replayDuration < 60 ? `${replayDuration}s` : `${replayDuration / 60}m`}
-                                        </div>
+                                    </div>
+                                    <div className="text-[10px] text-slate-500 mt-1">
+                                        Use <span className="text-slate-300 font-mono">Alt+Shift+S</span> to save last {replayDuration < 60 ? `${replayDuration}s` : `${replayDuration / 60}m`}
                                     </div>
                                 </div>
                             ) : (
@@ -1110,172 +1200,178 @@ function App() {
                         </div>
 
                         {/* Source Selection & Preview */}
-                        {!isRecording && !previewUrl ? (
-                            <div className="grid grid-cols-2 gap-4">
-                                <button
-                                    onClick={handleSelectScreen}
-                                    className={`group relative p-4 rounded-xl border-2 transition-all duration-300 flex flex-col items-center justify-center gap-3 overflow-hidden
+                        {
+                            !isRecording && !previewUrl ? (
+                                <div className="grid grid-cols-2 gap-4">
+                                    <button
+                                        onClick={handleSelectScreen}
+                                        className={`group relative p-4 rounded-xl border-2 transition-all duration-300 flex flex-col items-center justify-center gap-3 overflow-hidden
                             ${selectedSource && selectedSource.id !== 'area' ? 'border-indigo-500 bg-indigo-500/5' : 'border-slate-700 bg-slate-800/30 hover:border-indigo-500/50 hover:bg-slate-800/50'}
                         `}
-                                >
-                                    <div className={`p-3 rounded-lg transition-colors ${selectedSource && selectedSource.id !== 'area' ? 'bg-indigo-500 text-white shadow-lg shadow-indigo-500/30' : 'bg-slate-700 text-slate-300 group-hover:bg-slate-600 group-hover:text-white'}`}>
-                                        <Monitor className="w-6 h-6" />
-                                    </div>
-                                    <div className="text-center">
-                                        <span className="block font-medium text-slate-200">Full Screen</span>
-                                        <span className="text-xs text-slate-400 mt-1">{selectedSource && selectedSource.id !== 'area' ? selectedSource.name : "Select a display"}</span>
-                                    </div>
-                                    {selectedSource && selectedSource.id !== 'area' && <div className="absolute top-2 right-2 text-indigo-500"><CheckCircle className="w-4 h-4" /></div>}
-                                </button>
+                                    >
+                                        <div className={`p-3 rounded-lg transition-colors ${selectedSource && selectedSource.id !== 'area' ? 'bg-indigo-500 text-white shadow-lg shadow-indigo-500/30' : 'bg-slate-700 text-slate-300 group-hover:bg-slate-600 group-hover:text-white'}`}>
+                                            <Monitor className="w-6 h-6" />
+                                        </div>
+                                        <div className="text-center">
+                                            <span className="block font-medium text-slate-200">Full Screen</span>
+                                            <span className="text-xs text-slate-400 mt-1">{selectedSource && selectedSource.id !== 'area' ? selectedSource.name : "Select a display"}</span>
+                                        </div>
+                                        {selectedSource && selectedSource.id !== 'area' && <div className="absolute top-2 right-2 text-indigo-500"><CheckCircle className="w-4 h-4" /></div>}
+                                    </button>
 
-                                <button
-                                    onClick={handleSelectRegion}
-                                    className={`group relative p-4 rounded-xl border-2 transition-all duration-300 flex flex-col items-center justify-center gap-3 overflow-hidden
+                                    <button
+                                        onClick={handleSelectRegion}
+                                        className={`group relative p-4 rounded-xl border-2 transition-all duration-300 flex flex-col items-center justify-center gap-3 overflow-hidden
                             ${selectedSource && selectedSource.id === 'area' ? 'border-purple-500 bg-purple-500/5' : 'border-slate-700 bg-slate-800/30 hover:border-purple-500/50 hover:bg-slate-800/50'}
                         `}
-                                >
-                                    <div className={`p-3 rounded-lg transition-colors ${selectedSource && selectedSource.id === 'area' ? 'bg-purple-500 text-white shadow-lg shadow-purple-500/30' : 'bg-slate-700 text-slate-300 group-hover:bg-purple-500 group-hover:text-white'}`}>
-                                        <Crop className="w-6 h-6" />
-                                    </div>
-                                    <div className="text-center">
-                                        <span className="block font-medium text-slate-200">Select Area</span>
-                                        <span className="text-xs text-slate-400 mt-1">{selectedSource && selectedSource.id === 'area' ? selectedSource.name : "Record region"}</span>
-                                    </div>
-                                    {selectedSource && selectedSource.id === 'area' && <div className="absolute top-2 right-2 text-purple-500"><CheckCircle className="w-4 h-4" /></div>}
-                                </button>
-                            </div>
-                        ) : null}
+                                    >
+                                        <div className={`p-3 rounded-lg transition-colors ${selectedSource && selectedSource.id === 'area' ? 'bg-purple-500 text-white shadow-lg shadow-purple-500/30' : 'bg-slate-700 text-slate-300 group-hover:bg-purple-500 group-hover:text-white'}`}>
+                                            <Crop className="w-6 h-6" />
+                                        </div>
+                                        <div className="text-center">
+                                            <span className="block font-medium text-slate-200">Select Area</span>
+                                            <span className="text-xs text-slate-400 mt-1">{selectedSource && selectedSource.id === 'area' ? selectedSource.name : "Record region"}</span>
+                                        </div>
+                                        {selectedSource && selectedSource.id === 'area' && <div className="absolute top-2 right-2 text-purple-500"><CheckCircle className="w-4 h-4" /></div>}
+                                    </button>
+                                </div>
+                            ) : null
+                        }
 
                         {/* Preview Video */}
-                        {previewUrl && (
-                            <div className="space-y-6">
-                                <div className="rounded-xl overflow-hidden border border-slate-700 bg-black relative group shadow-2xl">
-                                    <video src={previewUrl} controls className="w-full h-auto max-h-[300px]" />
-                                </div>
+                        {
+                            previewUrl && (
+                                <div className="space-y-6">
+                                    <div className="rounded-xl overflow-hidden border border-slate-700 bg-black relative group shadow-2xl">
+                                        <video src={previewUrl} controls className="w-full h-auto max-h-[300px]" />
+                                    </div>
 
-                                {/* Share Buttons */}
-                                <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700/50">
-                                    <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
-                                        <Share2 className="w-3 h-3" /> Share your creation
-                                    </h3>
-                                    <div className="grid grid-cols-4 gap-3">
-                                        <button onClick={() => openShare('https://www.tiktok.com/upload')} className="flex flex-col items-center gap-2 p-3 rounded-lg bg-slate-800 hover:bg-[#000000] hover:text-white transition-all border border-slate-700 group hover:border-slate-600">
-                                            <div className="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center group-hover:bg-slate-800 transition-colors text-slate-200">
-                                                <SocialIcon type="tiktok" className="w-5 h-5" />
-                                            </div>
-                                            <span className="text-xs font-medium text-slate-400 group-hover:text-white">TikTok</span>
-                                        </button>
+                                    {/* Share Buttons */}
+                                    <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700/50">
+                                        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+                                            <Share2 className="w-3 h-3" /> Share your creation
+                                        </h3>
+                                        <div className="grid grid-cols-4 gap-3">
+                                            <button onClick={() => openShare('https://www.tiktok.com/upload')} className="flex flex-col items-center gap-2 p-3 rounded-lg bg-slate-800 hover:bg-[#000000] hover:text-white transition-all border border-slate-700 group hover:border-slate-600">
+                                                <div className="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center group-hover:bg-slate-800 transition-colors text-slate-200">
+                                                    <SocialIcon type="tiktok" className="w-5 h-5" />
+                                                </div>
+                                                <span className="text-xs font-medium text-slate-400 group-hover:text-white">TikTok</span>
+                                            </button>
 
-                                        <button onClick={() => openShare('https://studio.youtube.com/channel/UC/videos/upload?d=ud')} className="flex flex-col items-center gap-2 p-3 rounded-lg bg-slate-800 hover:bg-[#FF0000]/10 hover:border-red-500/30 transition-all border border-slate-700 group">
-                                            <div className="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center group-hover:bg-red-600 transition-colors text-slate-200 group-hover:text-white">
-                                                <Youtube className="w-5 h-5" />
-                                            </div>
-                                            <span className="text-xs font-medium text-slate-400 group-hover:text-red-500">YouTube</span>
-                                        </button>
+                                            <button onClick={() => openShare('https://studio.youtube.com/channel/UC/videos/upload?d=ud')} className="flex flex-col items-center gap-2 p-3 rounded-lg bg-slate-800 hover:bg-[#FF0000]/10 hover:border-red-500/30 transition-all border border-slate-700 group">
+                                                <div className="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center group-hover:bg-red-600 transition-colors text-slate-200 group-hover:text-white">
+                                                    <Youtube className="w-5 h-5" />
+                                                </div>
+                                                <span className="text-xs font-medium text-slate-400 group-hover:text-red-500">YouTube</span>
+                                            </button>
 
-                                        <button onClick={() => openShare('https://www.facebook.com/')} className="flex flex-col items-center gap-2 p-3 rounded-lg bg-slate-800 hover:bg-[#1877F2]/10 hover:border-blue-500/30 transition-all border border-slate-700 group">
-                                            <div className="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center group-hover:bg-[#1877F2] transition-colors text-slate-200 group-hover:text-white">
-                                                <Facebook className="w-5 h-5" />
-                                            </div>
-                                            <span className="text-xs font-medium text-slate-400 group-hover:text-[#1877F2]">Facebook</span>
-                                        </button>
+                                            <button onClick={() => openShare('https://www.facebook.com/')} className="flex flex-col items-center gap-2 p-3 rounded-lg bg-slate-800 hover:bg-[#1877F2]/10 hover:border-blue-500/30 transition-all border border-slate-700 group">
+                                                <div className="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center group-hover:bg-[#1877F2] transition-colors text-slate-200 group-hover:text-white">
+                                                    <Facebook className="w-5 h-5" />
+                                                </div>
+                                                <span className="text-xs font-medium text-slate-400 group-hover:text-[#1877F2]">Facebook</span>
+                                            </button>
 
-                                        <button onClick={() => handleDownload()} className="flex flex-col items-center gap-2 p-3 rounded-lg bg-slate-800 hover:bg-[#5865F2]/10 hover:border-indigo-500/30 transition-all border border-slate-700 group">
-                                            <div className="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center group-hover:bg-[#5865F2] transition-colors text-slate-200 group-hover:text-white">
-                                                <SocialIcon type="discord" className="w-5 h-5" />
-                                            </div>
-                                            <span className="text-xs font-medium text-slate-400 group-hover:text-[#5865F2]">Save & Post</span>
-                                        </button>
+                                            <button onClick={() => handleDownload()} className="flex flex-col items-center gap-2 p-3 rounded-lg bg-slate-800 hover:bg-[#5865F2]/10 hover:border-indigo-500/30 transition-all border border-slate-700 group">
+                                                <div className="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center group-hover:bg-[#5865F2] transition-colors text-slate-200 group-hover:text-white">
+                                                    <SocialIcon type="discord" className="w-5 h-5" />
+                                                </div>
+                                                <span className="text-xs font-medium text-slate-400 group-hover:text-[#5865F2]">Save & Post</span>
+                                            </button>
+                                        </div>
                                     </div>
                                 </div>
-                            </div>
-                        )}
+                            )
+                        }
 
                         {/* AI Analysis & Trim Section */}
-                        {previewUrl && (
-                            <div className="bg-gradient-to-br from-indigo-900/30 to-purple-900/30 rounded-xl p-5 border border-indigo-500/30">
-                                <div className="flex items-center justify-between mb-4">
-                                    <h3 className="text-sm font-bold text-indigo-300 uppercase tracking-wider flex items-center gap-2">
-                                        <Sparkles className="w-4 h-4" /> AI Operations
-                                    </h3>
-                                    <div className="flex gap-2">
-                                        {!isTrimming && !suggestedTrim && (
-                                            <button
-                                                onClick={handleSmartTrim}
-                                                className="text-xs bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/30 px-3 py-1.5 rounded-lg font-medium transition-colors flex items-center gap-1"
-                                            >
-                                                <Crop className="w-3 h-3" /> Smart Trim
-                                            </button>
-                                        )}
+                        {
+                            previewUrl && (
+                                <div className="bg-gradient-to-br from-indigo-900/30 to-purple-900/30 rounded-xl p-5 border border-indigo-500/30">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <h3 className="text-sm font-bold text-indigo-300 uppercase tracking-wider flex items-center gap-2">
+                                            <Sparkles className="w-4 h-4" /> AI Operations
+                                        </h3>
+                                        <div className="flex gap-2">
+                                            {!isTrimming && !suggestedTrim && (
+                                                <button
+                                                    onClick={handleSmartTrim}
+                                                    className="text-xs bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/30 px-3 py-1.5 rounded-lg font-medium transition-colors flex items-center gap-1"
+                                                >
+                                                    <Crop className="w-3 h-3" /> Smart Trim
+                                                </button>
+                                            )}
 
-                                        {!aiAnalysis && !isAnalyzing && (
-                                            <button
-                                                onClick={handleAnalyzeAI}
-                                                className="text-xs bg-indigo-500 hover:bg-indigo-600 text-white px-3 py-1.5 rounded-lg font-medium transition-colors flex items-center gap-1"
-                                            >
-                                                <Sparkles className="w-3 h-3" /> Analyze Video
-                                            </button>
-                                        )}
+                                            {!aiAnalysis && !isAnalyzing && (
+                                                <button
+                                                    onClick={handleAnalyzeAI}
+                                                    className="text-xs bg-indigo-500 hover:bg-indigo-600 text-white px-3 py-1.5 rounded-lg font-medium transition-colors flex items-center gap-1"
+                                                >
+                                                    <Sparkles className="w-3 h-3" /> Analyze Video
+                                                </button>
+                                            )}
+                                        </div>
                                     </div>
-                                </div>
 
-                                {(isAnalyzing || isTrimming) && (
-                                    <div className="flex items-center justify-center py-4 space-x-2 text-indigo-300 animate-pulse">
-                                        <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                                        <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                                        <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                                        <span className="text-xs font-medium ml-2">
-                                            {isTrimming ? "Autodetecting silence & cropping..." : "Generating Report..."}
-                                        </span>
-                                    </div>
-                                )}
+                                    {(isAnalyzing || isTrimming) && (
+                                        <div className="flex items-center justify-center py-4 space-x-2 text-indigo-300 animate-pulse">
+                                            <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                                            <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                                            <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                                            <span className="text-xs font-medium ml-2">
+                                                {isTrimming ? "Autodetecting silence & cropping..." : "Generating Report..."}
+                                            </span>
+                                        </div>
+                                    )}
 
-                                {isReplayMode && trimMessage && !suggestedTrim && (
-                                    <div className="mb-4 bg-indigo-500/10 border border-indigo-500/20 p-3 rounded-lg flex items-center gap-2 text-sm text-indigo-400 animate-in fade-in slide-in-from-top-2">
-                                        <CheckCircle className="w-4 h-4" />
-                                        {trimMessage}
-                                    </div>
-                                )}
-
-                                {trimMessage && (
-                                    <div className="mb-4 bg-emerald-500/10 border border-emerald-500/20 p-3 rounded-lg flex items-center gap-2 text-sm text-emerald-400 animate-in fade-in slide-in-from-top-2 justify-between">
-                                        <div className="flex items-center gap-2">
+                                    {isReplayMode && trimMessage && !suggestedTrim && (
+                                        <div className="mb-4 bg-indigo-500/10 border border-indigo-500/20 p-3 rounded-lg flex items-center gap-2 text-sm text-indigo-400 animate-in fade-in slide-in-from-top-2">
                                             <CheckCircle className="w-4 h-4" />
                                             {trimMessage}
                                         </div>
-                                        {suggestedTrim && (
-                                            <button
-                                                onClick={applyTrim}
-                                                className="text-xs bg-emerald-500 hover:bg-emerald-600 text-white px-3 py-1 rounded-md font-bold transition-colors shadow-lg shadow-emerald-500/20"
-                                            >
-                                                Apply Cut
-                                            </button>
-                                        )}
-                                    </div>
-                                )}
+                                    )}
 
-                                {aiAnalysis && (
-                                    <div className="space-y-3 animate-in fade-in slide-in-from-bottom-2 duration-500">
-                                        <div>
-                                            <span className="text-xs text-slate-400 font-medium uppercase">Suggested Title</span>
-                                            <p className="text-white font-medium">{aiAnalysis.title}</p>
+                                    {trimMessage && (
+                                        <div className="mb-4 bg-emerald-500/10 border border-emerald-500/20 p-3 rounded-lg flex items-center gap-2 text-sm text-emerald-400 animate-in fade-in slide-in-from-top-2 justify-between">
+                                            <div className="flex items-center gap-2">
+                                                <CheckCircle className="w-4 h-4" />
+                                                {trimMessage}
+                                            </div>
+                                            {suggestedTrim && (
+                                                <button
+                                                    onClick={applyTrim}
+                                                    className="text-xs bg-emerald-500 hover:bg-emerald-600 text-white px-3 py-1 rounded-md font-bold transition-colors shadow-lg shadow-emerald-500/20"
+                                                >
+                                                    Apply Cut
+                                                </button>
+                                            )}
                                         </div>
-                                        <div>
-                                            <span className="text-xs text-slate-400 font-medium uppercase">Summary</span>
-                                            <p className="text-sm text-slate-300 leading-relaxed">{aiAnalysis.summary}</p>
-                                        </div>
-                                        <div>
-                                            <span className="text-xs text-slate-400 font-medium uppercase">Tags</span>
-                                            <div className="flex flex-wrap gap-2 mt-1">
-                                                {aiAnalysis.tags.map(tag => (
-                                                    <span key={tag} className="text-xs bg-indigo-500/20 text-indigo-300 px-2 py-1 rounded-md border border-indigo-500/20">#{tag}</span>
-                                                ))}
+                                    )}
+
+                                    {aiAnalysis && (
+                                        <div className="space-y-3 animate-in fade-in slide-in-from-bottom-2 duration-500">
+                                            <div>
+                                                <span className="text-xs text-slate-400 font-medium uppercase">Suggested Title</span>
+                                                <p className="text-white font-medium">{aiAnalysis.title}</p>
+                                            </div>
+                                            <div>
+                                                <span className="text-xs text-slate-400 font-medium uppercase">Summary</span>
+                                                <p className="text-sm text-slate-300 leading-relaxed">{aiAnalysis.summary}</p>
+                                            </div>
+                                            <div>
+                                                <span className="text-xs text-slate-400 font-medium uppercase">Tags</span>
+                                                <div className="flex flex-wrap gap-2 mt-1">
+                                                    {aiAnalysis.tags.map(tag => (
+                                                        <span key={tag} className="text-xs bg-indigo-500/20 text-indigo-300 px-2 py-1 rounded-md border border-indigo-500/20">#{tag}</span>
+                                                    ))}
+                                                </div>
                                             </div>
                                         </div>
-                                    </div>
-                                )}
-                            </div>
-                        )}
+                                    )}
+                                </div>
+                            )
+                        }
 
                         {/* Main Action Buttons */}
                         <div className="flex justify-center pt-2">
@@ -1339,64 +1435,68 @@ function App() {
                             )}
                         </div>
 
-                        {error && (
-                            <div className="text-center text-red-400 text-sm bg-red-500/10 p-3 rounded-lg border border-red-500/20">
-                                {error}
-                            </div>
-                        )}
+                        {
+                            error && (
+                                <div className="text-center text-red-400 text-sm bg-red-500/10 p-3 rounded-lg border border-red-500/20">
+                                    {error}
+                                </div>
+                            )
+                        }
 
                         {/* Saved Clips Library */}
-                        {savedClips.length > 0 && !previewUrl && (
-                            <div className="pt-4 border-t border-slate-700/50">
-                                <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">Saved Clips</h3>
-                                <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
-                                    {savedClips.map((clip) => (
-                                        <div key={clip.id} className="flex items-center gap-4 p-3 bg-slate-950/40 rounded-xl border border-white/5 group hover:border-indigo-500/30 hover:bg-slate-900/60 transition-all">
-                                            <div className="relative w-24 h-16 bg-black rounded-lg overflow-hidden shrink-0 ring-1 ring-white/10">
-                                                <video src={clip.url} className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity" />
-                                                <div className="absolute inset-0 flex items-center justify-center bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity">
-                                                    <Play className="w-8 h-8 text-white drop-shadow-lg" />
+                        {
+                            savedClips.length > 0 && !previewUrl && (
+                                <div className="pt-4 border-t border-slate-700/50">
+                                    <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">Saved Clips</h3>
+                                    <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
+                                        {savedClips.map((clip) => (
+                                            <div key={clip.id} className="flex items-center gap-4 p-3 bg-slate-950/40 rounded-xl border border-white/5 group hover:border-indigo-500/30 hover:bg-slate-900/60 transition-all">
+                                                <div className="relative w-24 h-16 bg-black rounded-lg overflow-hidden shrink-0 ring-1 ring-white/10">
+                                                    <video src={clip.url} className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity" />
+                                                    <div className="absolute inset-0 flex items-center justify-center bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                        <Play className="w-8 h-8 text-white drop-shadow-lg" />
+                                                    </div>
+                                                </div>
+                                                <div className="flex-1 min-w-0">
+                                                    <div className="font-medium text-slate-200 truncate group-hover:text-indigo-300 transition-colors">Flashback Clip</div>
+                                                    <div className="text-xs text-slate-500 flex items-center gap-2 mt-1">
+                                                        <Clock className="w-3 h-3" />
+                                                        {clip.timestamp.toLocaleTimeString()}
+                                                        <span className="w-1 h-1 bg-slate-700 rounded-full" />
+                                                        <span className="text-slate-400">{clip.duration}s</span>
+                                                    </div>
+                                                </div>
+                                                <div className="flex items-center gap-2 opacity-60 group-hover:opacity-100 transition-opacity">
+                                                    <button
+                                                        onClick={() => {
+                                                            const a = document.createElement('a');
+                                                            a.href = clip.url;
+                                                            a.download = `flashback-${clip.id}.webm`;
+                                                            document.body.appendChild(a);
+                                                            a.click();
+                                                            document.body.removeChild(a);
+                                                        }}
+                                                        className="p-2 text-slate-400 hover:text-indigo-400 hover:bg-indigo-500/10 rounded-lg transition-colors"
+                                                        title="Download"
+                                                    >
+                                                        <Download className="w-4 h-4" />
+                                                    </button>
+                                                    <button
+                                                        onClick={() => setSavedClips(prev => prev.filter(c => c.id !== clip.id))}
+                                                        className="p-2 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+                                                        title="Delete"
+                                                    >
+                                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /></svg>
+                                                    </button>
                                                 </div>
                                             </div>
-                                            <div className="flex-1 min-w-0">
-                                                <div className="font-medium text-slate-200 truncate group-hover:text-indigo-300 transition-colors">Flashback Clip</div>
-                                                <div className="text-xs text-slate-500 flex items-center gap-2 mt-1">
-                                                    <Clock className="w-3 h-3" />
-                                                    {clip.timestamp.toLocaleTimeString()}
-                                                    <span className="w-1 h-1 bg-slate-700 rounded-full" />
-                                                    <span className="text-slate-400">{clip.duration}s</span>
-                                                </div>
-                                            </div>
-                                            <div className="flex items-center gap-2 opacity-60 group-hover:opacity-100 transition-opacity">
-                                                <button
-                                                    onClick={() => {
-                                                        const a = document.createElement('a');
-                                                        a.href = clip.url;
-                                                        a.download = `flashback-${clip.id}.webm`;
-                                                        document.body.appendChild(a);
-                                                        a.click();
-                                                        document.body.removeChild(a);
-                                                    }}
-                                                    className="p-2 text-slate-400 hover:text-indigo-400 hover:bg-indigo-500/10 rounded-lg transition-colors"
-                                                    title="Download"
-                                                >
-                                                    <Download className="w-4 h-4" />
-                                                </button>
-                                                <button
-                                                    onClick={() => setSavedClips(prev => prev.filter(c => c.id !== clip.id))}
-                                                    className="p-2 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
-                                                    title="Delete"
-                                                >
-                                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /></svg>
-                                                </button>
-                                            </div>
-                                        </div>
-                                    ))}
+                                        ))}
+                                    </div>
                                 </div>
-                            </div>
-                        )}
-                    </div>
-                </div>
+                            )
+                        }
+                    </div >
+                </div >
             </main >
 
             {/* Source Selection Modal */}
@@ -1629,7 +1729,7 @@ function App() {
                     </div>
                 )
             }
-        </div>
+        </div >
     )
 }
 
