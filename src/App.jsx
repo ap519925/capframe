@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Monitor, Crop, CheckCircle, Square, Play, Download, Settings, Mic, MicOff, Video, Sliders, Share2, Youtube, Facebook, UploadCloud, Sparkles, Rewind, Clock, Laptop } from 'lucide-react';
+import { Monitor, Crop, CheckCircle, Square, Play, Download, Settings, Mic, MicOff, Video, Sliders, Share2, Youtube, Facebook, UploadCloud, Sparkles, Rewind, Clock, Laptop, Volume2, Film, Wand2, X } from 'lucide-react';
 
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
@@ -36,12 +36,14 @@ function App() {
 
     // Settings logic
     const [showSettings, setShowSettings] = useState(false);
+    const [settingsTab, setSettingsTab] = useState('video'); // video, audio, ai
     const [apiKey, setApiKey] = useState(() => localStorage.getItem('GEMINI_API_KEY') || 'AIzaSyBDTFMYIWpckHC714g2dFiXg9fsWdBLK0I');
 
     // Audio Settings
     const [audioBitrate, setAudioBitrate] = useState(128000); // 128 kbps default
     const [selectedMicId, setSelectedMicId] = useState('default');
     const [audioDevices, setAudioDevices] = useState([]);
+    const [noiseSuppression, setNoiseSuppression] = useState(true);
 
     // Video Settings
     const [videoResolution, setVideoResolution] = useState('1080p'); // 4k, 2k, 1080p, 720p, 480p
@@ -528,7 +530,10 @@ function App() {
                 try {
                     const micConstraints = {
                         audio: {
-                            deviceId: selectedMicId !== 'default' ? { exact: selectedMicId } : undefined
+                            deviceId: selectedMicId !== 'default' ? { exact: selectedMicId } : undefined,
+                            noiseSuppression: noiseSuppression,
+                            echoCancellation: noiseSuppression,
+                            autoGainControl: noiseSuppression
                         },
                         video: false
                     };
@@ -906,7 +911,7 @@ function App() {
     };
 
     return (
-        <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col font-sans selection:bg-indigo-500 selection:text-white">
+        <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-indigo-500 selection:text-white relative overflow-hidden">
 
             {/* Countdown Overlay */}
             {countdown !== null && (
@@ -917,17 +922,19 @@ function App() {
                 </div>
             )}
 
-            {/* Background Ambience */}
+            {/* Background Ambience & Grid */}
             <div className="fixed inset-0 pointer-events-none">
-                <div className="absolute top-[-10%] left-[-10%] w-96 h-96 bg-purple-600/20 rounded-full blur-[100px]" />
-                <div className="absolute bottom-[-10%] right-[-10%] w-96 h-96 bg-blue-600/20 rounded-full blur-[100px]" />
+                <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px]"></div>
+                <div className="absolute top-[-20%] left-[-10%] w-[600px] h-[600px] bg-purple-600/10 rounded-full blur-[120px]" />
+                <div className="absolute bottom-[-20%] right-[-10%] w-[600px] h-[600px] bg-indigo-600/10 rounded-full blur-[120px]" />
+                <div className="absolute top-[40%] left-[50%] translate-x-[-50%] translate-y-[-50%] w-[800px] h-[800px] bg-blue-500/5 rounded-full blur-[100px]" />
             </div>
 
-            <main className="relative z-10 container mx-auto px-6 py-8 flex items-center justify-center min-h-screen">
-                <div className="w-full max-w-2xl bg-slate-800/50 backdrop-blur-xl rounded-2xl border border-slate-700/50 shadow-2xl overflow-hidden">
+            <main className="relative z-10 container mx-auto px-4 py-8 flex items-center justify-center min-h-screen">
+                <div className="w-full max-w-3xl bg-slate-900/60 backdrop-blur-2xl rounded-3xl border border-white/5 shadow-2xl overflow-hidden ring-1 ring-white/10">
 
                     {/* Header */}
-                    <div className="px-6 py-4 border-b border-slate-700/50 flex justify-between items-center bg-slate-800/60">
+                    <div className="px-8 py-5 border-b border-white/5 flex justify-between items-center bg-slate-900/40">
                         <div className="flex items-center gap-3">
                             <div className="p-2 bg-gradient-to-tr from-indigo-500 to-purple-500 rounded-lg shadow-lg shadow-indigo-500/20">
                                 <Video className="w-5 h-5 text-white" />
@@ -1294,23 +1301,23 @@ function App() {
                                 <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">Saved Clips</h3>
                                 <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
                                     {savedClips.map((clip) => (
-                                        <div key={clip.id} className="flex items-center gap-4 p-3 bg-slate-800/50 rounded-xl border border-slate-700/50 group hover:border-indigo-500/30 transition-all">
-                                            <div className="relative w-24 h-16 bg-black rounded-lg overflow-hidden shrink-0">
-                                                <video src={clip.url} className="w-full h-full object-cover" />
-                                                <div className="absolute inset-0 flex items-center justify-center bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity">
-                                                    <Play className="w-6 h-6 text-white" />
+                                        <div key={clip.id} className="flex items-center gap-4 p-3 bg-slate-950/40 rounded-xl border border-white/5 group hover:border-indigo-500/30 hover:bg-slate-900/60 transition-all">
+                                            <div className="relative w-24 h-16 bg-black rounded-lg overflow-hidden shrink-0 ring-1 ring-white/10">
+                                                <video src={clip.url} className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity" />
+                                                <div className="absolute inset-0 flex items-center justify-center bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                    <Play className="w-8 h-8 text-white drop-shadow-lg" />
                                                 </div>
                                             </div>
                                             <div className="flex-1 min-w-0">
-                                                <div className="font-medium text-slate-200 truncate">Flashback Clip</div>
+                                                <div className="font-medium text-slate-200 truncate group-hover:text-indigo-300 transition-colors">Flashback Clip</div>
                                                 <div className="text-xs text-slate-500 flex items-center gap-2 mt-1">
                                                     <Clock className="w-3 h-3" />
                                                     {clip.timestamp.toLocaleTimeString()}
-                                                    <span className="w-1 h-1 bg-slate-600 rounded-full" />
-                                                    {clip.duration}s
+                                                    <span className="w-1 h-1 bg-slate-700 rounded-full" />
+                                                    <span className="text-slate-400">{clip.duration}s</span>
                                                 </div>
                                             </div>
-                                            <div className="flex items-center gap-2">
+                                            <div className="flex items-center gap-2 opacity-60 group-hover:opacity-100 transition-opacity">
                                                 <button
                                                     onClick={() => {
                                                         const a = document.createElement('a');
@@ -1346,20 +1353,24 @@ function App() {
             {
                 sourceSelectionModal && (
                     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-                        <div className="bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-3xl max-h-[80vh] flex flex-col">
-                            <div className="p-6 border-b border-slate-700 flex justify-between items-center">
-                                <h2 className="text-xl font-bold text-white">Select Screen</h2>
-                                <button onClick={() => setSourceSelectionModal(null)} className="text-slate-400 hover:text-white transition-colors">✕</button>
+                        <div className="bg-slate-900/90 border border-slate-700/50 rounded-3xl shadow-2xl w-full max-w-4xl max-h-[80vh] flex flex-col ring-1 ring-white/10 backdrop-blur-xl overflow-hidden">
+                            <div className="p-6 border-b border-slate-700/50 flex justify-between items-center bg-slate-950/30">
+                                <h2 className="text-xl font-bold text-white flex items-center gap-3">
+                                    <Monitor className="w-5 h-5 text-indigo-400" /> Select Source
+                                </h2>
+                                <button onClick={() => setSourceSelectionModal(null)} className="p-2 rounded-full hover:bg-white/10 text-slate-400 hover:text-white transition-colors">✕</button>
                             </div>
-                            <div className="p-6 overflow-y-auto grid grid-cols-2 gap-4">
+                            <div className="p-8 overflow-y-auto grid grid-cols-2 lg:grid-cols-3 gap-6 bg-slate-900/30">
                                 {sourceSelectionModal.map(src => (
                                     <button
                                         key={src.id}
                                         onClick={() => selectSource(src)}
-                                        className="group flex flex-col gap-3 p-4 rounded-xl border border-slate-700 bg-slate-900/50 hover:border-indigo-500 hover:bg-indigo-500/5 transition-all text-left"
+                                        className="group flex flex-col gap-3 p-4 rounded-2xl border border-slate-700/50 bg-slate-950/40 hover:border-indigo-500/50 hover:bg-slate-900 hover:shadow-xl hover:shadow-indigo-500/10 transition-all text-left ring-1 ring-transparent hover:ring-indigo-500/20"
                                     >
-                                        <img src={src.thumbnail} alt={src.name} className="w-full aspect-video object-cover rounded-lg border border-slate-700 group-hover:border-indigo-500/50" />
-                                        <span className="font-medium text-slate-200 group-hover:text-indigo-400 truncate w-full">{src.name}</span>
+                                        <div className="relative w-full aspect-video rounded-xl overflow-hidden bg-black border border-slate-800 group-hover:border-indigo-500/30 transition-colors">
+                                            <img src={src.thumbnail} alt={src.name} className="w-full h-full object-cover opacity-80 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500" />
+                                        </div>
+                                        <span className="font-medium text-slate-300 group-hover:text-indigo-300 truncate w-full px-1">{src.name}</span>
                                     </button>
                                 ))}
                             </div>
@@ -1368,118 +1379,189 @@ function App() {
                 )
             }
 
-            {/* Settings Modal */}
+            {/* Premium Settings Modal */}
             {
                 showSettings && (
                     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-                        <div className="bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-md flex flex-col overflow-hidden">
-                            <div className="p-6 border-b border-slate-700 flex justify-between items-center bg-slate-800/60">
-                                <h2 className="text-xl font-bold text-white flex items-center gap-2">
-                                    <Settings className="w-5 h-5" /> Settings
+                        <div className="bg-slate-900/90 border border-slate-700/50 rounded-3xl shadow-2xl w-full max-w-4xl h-[600px] flex overflow-hidden ring-1 ring-white/10 backdrop-blur-xl">
+
+                            {/* Sidebar */}
+                            <div className="w-64 bg-slate-950/50 border-r border-slate-700/50 p-6 flex flex-col gap-2">
+                                <h2 className="text-xl font-bold text-white flex items-center gap-3 mb-6 px-2">
+                                    <Settings className="w-6 h-6 text-indigo-400" />
+                                    <span>Settings</span>
                                 </h2>
-                                <button onClick={() => setShowSettings(false)} className="text-slate-400 hover:text-white transition-colors">✕</button>
-                            </div>
-                            <div className="p-6 space-y-4">
-                                <div>
-                                    <label className="block text-sm font-medium text-slate-300 mb-2">Google Gemini API Key</label>
-                                    <input
-                                        type="password"
-                                        value={apiKey}
-                                        onChange={(e) => setApiKey(e.target.value)}
-                                        placeholder="AI..."
-                                        className="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-slate-200 focus:outline-none focus:border-indigo-500 transition-colors"
-                                    />
-                                    <p className="text-xs text-slate-500 mt-2">
-                                        Required for AI Analysis features. Get a free key at <a href="#" onClick={() => openShare('https://aistudio.google.com/app/apikey')} className="text-indigo-400 hover:underline">Google AI Studio</a>.
-                                        The key is stored locally on your device.
-                                    </p>
-                                </div>
-                            </div>
 
-                            <div className="pt-4 border-t border-slate-700">
-                                <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">Audio Settings</h3>
-
-                                <div className="space-y-4">
-                                    <div>
-                                        <label className="block text-sm font-medium text-slate-300 mb-2">Microphone Source</label>
-                                        <select
-                                            value={selectedMicId}
-                                            onChange={(e) => setSelectedMicId(e.target.value)}
-                                            className="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-slate-200 focus:outline-none focus:border-indigo-500 transition-colors"
-                                        >
-                                            <option value="default">Default Microphone</option>
-                                            {audioDevices.map(device => (
-                                                <option key={device.deviceId} value={device.deviceId}>
-                                                    {device.label || `Microphone ${device.deviceId.slice(0, 5)}...`}
-                                                </option>
-                                            ))}
-                                        </select>
-                                    </div>
-
-                                    <div>
-                                        <label className="block text-sm font-medium text-slate-300 mb-2">Sound Quality (Bitrate)</label>
-                                        <select
-                                            value={audioBitrate}
-                                            onChange={(e) => setAudioBitrate(Number(e.target.value))}
-                                            className="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-slate-200 focus:outline-none focus:border-indigo-500 transition-colors"
-                                        >
-                                            <option value="64000">Low (64 kbps)</option>
-                                            <option value="128000">Standard (128 kbps)</option>
-                                            <option value="192000">High (192 kbps)</option>
-                                            <option value="256000">Ultra (256 kbps)</option>
-                                            <option value="320000">Studio (320 kbps)</option>
-                                        </select>
-                                    </div>
-                                </div>
+                                <button
+                                    onClick={() => setSettingsTab('video')}
+                                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium text-left
+                                    ${settingsTab === 'video' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'}`}
+                                >
+                                    <Film className="w-5 h-5" /> Video Quality
+                                </button>
+                                <button
+                                    onClick={() => setSettingsTab('audio')}
+                                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium text-left
+                                    ${settingsTab === 'audio' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'}`}
+                                >
+                                    <Volume2 className="w-5 h-5" /> Audio & Mic
+                                </button>
+                                <button
+                                    onClick={() => setSettingsTab('ai')}
+                                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium text-left
+                                    ${settingsTab === 'ai' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'}`}
+                                >
+                                    <Wand2 className="w-5 h-5" /> AI Features
+                                </button>
                             </div>
 
-                            <div className="pt-4 border-t border-slate-700">
-                                <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">Video Quality</h3>
+                            {/* Content Area */}
+                            <div className="flex-1 flex flex-col bg-slate-900/30">
+                                <div className="p-8 flex-1 overflow-y-auto">
+                                    {settingsTab === 'video' && (
+                                        <div className="space-y-8 animate-in slide-in-from-right-4 duration-300 fade-in">
+                                            <div>
+                                                <h3 className="text-lg font-semibold text-white mb-1">Recording Quality</h3>
+                                                <p className="text-slate-400 text-sm mb-6">Adjust the resolution and smoothness of your recordings.</p>
 
-                                <div className="space-y-4">
-                                    <div>
-                                        <label className="block text-sm font-medium text-slate-300 mb-2">Resolution</label>
-                                        <select
-                                            value={videoResolution}
-                                            onChange={(e) => setVideoResolution(e.target.value)}
-                                            className="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-slate-200 focus:outline-none focus:border-indigo-500 transition-colors"
-                                        >
-                                            <option value="4k">4K (2160p)</option>
-                                            <option value="2k">2K (1440p)</option>
-                                            <option value="1080p">Full HD (1080p)</option>
-                                            <option value="720p">HD (720p)</option>
-                                            <option value="480p">SD (480p)</option>
-                                        </select>
-                                    </div>
+                                                <div className="grid gap-6">
+                                                    <div className="bg-slate-800/40 p-5 rounded-2xl border border-slate-700/50">
+                                                        <label className="block text-sm font-medium text-slate-300 mb-3">Resolution</label>
+                                                        <select
+                                                            value={videoResolution}
+                                                            onChange={(e) => setVideoResolution(e.target.value)}
+                                                            className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all hover:border-slate-600"
+                                                        >
+                                                            <option value="4k">4K Ultra HD (2160p)</option>
+                                                            <option value="2k">2K Quad HD (1440p)</option>
+                                                            <option value="1080p">Full HD (1080p)</option>
+                                                            <option value="720p">HD (720p)</option>
+                                                            <option value="480p">SD (480p)</option>
+                                                        </select>
+                                                    </div>
 
-                                    <div>
-                                        <label className="block text-sm font-medium text-slate-300 mb-2">Frame Rate</label>
-                                        <div className="flex bg-slate-900 border border-slate-700 rounded-lg p-1">
-                                            {[30, 60, 0].map(fps => (
-                                                <button
-                                                    key={fps}
-                                                    onClick={() => setFrameRate(fps)}
-                                                    className={`flex-1 py-2 text-sm font-medium rounded-md transition-all
-                                                        ${frameRate === fps ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-200'}`}
-                                                >
-                                                    {fps === 0 ? 'Max / Native' : `${fps} FPS`}
-                                                </button>
-                                            ))}
+                                                    <div className="bg-slate-800/40 p-5 rounded-2xl border border-slate-700/50">
+                                                        <label className="block text-sm font-medium text-slate-300 mb-3">Frame Rate</label>
+                                                        <div className="grid grid-cols-3 gap-3">
+                                                            {[30, 60, 0].map(fps => (
+                                                                <button
+                                                                    key={fps}
+                                                                    onClick={() => setFrameRate(fps)}
+                                                                    className={`py-3 px-4 rounded-xl text-sm font-semibold transition-all border
+                                                                        ${frameRate === fps
+                                                                            ? 'bg-indigo-600 border-indigo-500 text-white shadow-lg shadow-indigo-500/25'
+                                                                            : 'bg-slate-950 border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-200'}`}
+                                                                >
+                                                                    {fps === 0 ? 'Max FPS' : `${fps} FPS`}
+                                                                </button>
+                                                            ))}
+                                                        </div>
+                                                        <p className="text-xs text-slate-500 mt-3">Higher frame rates result in smoother video but larger file sizes.</p>
+                                                    </div>
+                                                </div>
+                                            </div>
                                         </div>
-                                    </div>
+                                    )}
+
+                                    {settingsTab === 'audio' && (
+                                        <div className="space-y-8 animate-in slide-in-from-right-4 duration-300 fade-in">
+                                            <div>
+                                                <h3 className="text-lg font-semibold text-white mb-1">Audio Configuration</h3>
+                                                <p className="text-slate-400 text-sm mb-6">Manage input sources and audio fidelity.</p>
+
+                                                <div className="grid gap-6">
+                                                    <div className="bg-slate-800/40 p-5 rounded-2xl border border-slate-700/50">
+                                                        <label className="block text-sm font-medium text-slate-300 mb-3">Microphone Source</label>
+                                                        <select
+                                                            value={selectedMicId}
+                                                            onChange={(e) => setSelectedMicId(e.target.value)}
+                                                            className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all hover:border-slate-600"
+                                                        >
+                                                            <option value="default">Default System Microphone</option>
+                                                            {audioDevices.map(device => (
+                                                                <option key={device.deviceId} value={device.deviceId}>
+                                                                    {device.label || `Microphone ${device.deviceId.slice(0, 5)}...`}
+                                                                </option>
+                                                            ))}
+                                                        </select>
+                                                    </div>
+
+                                                    <div className="bg-slate-800/40 p-5 rounded-2xl border border-slate-700/50">
+                                                        <label className="block text-sm font-medium text-slate-300 mb-3">Audio Bitrate</label>
+                                                        <select
+                                                            value={audioBitrate}
+                                                            onChange={(e) => setAudioBitrate(Number(e.target.value))}
+                                                            className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all hover:border-slate-600"
+                                                        >
+                                                            <option value="64000">Low Quality (64 kbps)</option>
+                                                            <option value="128000">Standard (128 kbps)</option>
+                                                            <option value="192000">High Quality (192 kbps)</option>
+                                                            <option value="256000">Ultra Quality (256 kbps)</option>
+                                                            <option value="320000">Studio Master (320 kbps)</option>
+                                                        </select>
+                                                    </div>
+
+                                                    <div className="bg-slate-800/40 p-5 rounded-2xl border border-slate-700/50 flex items-center justify-between">
+                                                        <div>
+                                                            <label className="block text-sm font-medium text-slate-300 mb-1">Noise Suppression</label>
+                                                            <p className="text-xs text-slate-500">Reduces background noise and echo for clearer voice.</p>
+                                                        </div>
+                                                        <button
+                                                            onClick={() => setNoiseSuppression(!noiseSuppression)}
+                                                            className={`w-14 h-8 rounded-full p-1 transition-colors duration-300 ease-in-out border border-transparent ${noiseSuppression ? 'bg-indigo-600' : 'bg-slate-700'}`}
+                                                        >
+                                                            <div className={`w-6 h-6 bg-white rounded-full shadow-md transform transition-transform duration-300 ${noiseSuppression ? 'translate-x-6' : 'translate-x-0'}`} />
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {settingsTab === 'ai' && (
+                                        <div className="space-y-8 animate-in slide-in-from-right-4 duration-300 fade-in">
+                                            <div>
+                                                <h3 className="text-lg font-semibold text-white mb-1">Artificial Intelligence</h3>
+                                                <p className="text-slate-400 text-sm mb-6">Configure Google Gemini for smart recording analysis.</p>
+
+                                                <div className="bg-slate-800/40 p-6 rounded-2xl border border-indigo-500/20 relative overflow-hidden group">
+                                                    <div className="absolute top-0 right-0 p-3 opacity-20 group-hover:opacity-40 transition-opacity">
+                                                        <Sparkles className="w-24 h-24 text-indigo-500 rotate-12" />
+                                                    </div>
+
+                                                    <label className="block text-sm font-medium text-indigo-300 mb-3">Gemini API Key</label>
+                                                    <input
+                                                        type="password"
+                                                        value={apiKey}
+                                                        onChange={(e) => setApiKey(e.target.value)}
+                                                        placeholder="Enter your API key..."
+                                                        className="w-full bg-slate-950 border border-slate-700 rounded-xl p-4 text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all font-mono tracking-wide"
+                                                    />
+                                                    <p className="text-xs text-slate-500 mt-4 leading-relaxed max-w-md">
+                                                        This key unlocks Smart Trim and Auto-Labeling features.
+                                                        Your key is stored securely in your local device storage.
+                                                        <a href="#" onClick={() => openShare('https://aistudio.google.com/app/apikey')} className="block mt-2 text-indigo-400 hover:text-indigo-300 hover:underline">Get a free API key here &rarr;</a>
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+
+                                {/* Footer */}
+                                <div className="p-6 border-t border-slate-800 bg-slate-950/30 flex justify-end">
+                                    <button
+                                        onClick={() => setShowSettings(false)}
+                                        className="px-8 py-3 bg-white text-slate-950 hover:bg-slate-200 rounded-xl font-bold transition-all transform hover:scale-[1.02] shadow-xl shadow-white/5 active:scale-[0.98]"
+                                    >
+                                        Save Changes
+                                    </button>
                                 </div>
                             </div>
-                        </div>
-                        <div className="p-6 border-t border-slate-700 flex justify-end">
-                            <button
-                                onClick={() => setShowSettings(false)}
-                                className="px-4 py-2 bg-indigo-500 hover:bg-indigo-600 text-white rounded-lg font-medium transition-colors"
-                            >
-                                Save & Close
-                            </button>
                         </div>
                     </div>
-                )}
+                )
+            }
         </div>
     )
 }
