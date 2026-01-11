@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Monitor, Crop, CheckCircle, Square, Play, Download, Settings, Mic, MicOff, Video, Sliders, Share2, Youtube, Facebook, UploadCloud, Sparkles, Rewind, Clock, Laptop, Volume2, Film, Wand2, X } from 'lucide-react';
+import { Monitor, Crop, CheckCircle, Square, Play, Download, Settings, Mic, MicOff, Video, Sliders, Share2, Youtube, Facebook, UploadCloud, Sparkles, Rewind, Clock, Laptop, Volume2, Film, Wand2, X, Camera, CameraOff } from 'lucide-react';
 
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
@@ -37,13 +37,19 @@ function App() {
     // Settings logic
     const [showSettings, setShowSettings] = useState(false);
     const [settingsTab, setSettingsTab] = useState('video'); // video, audio, ai
-    const [apiKey, setApiKey] = useState(() => localStorage.getItem('GEMINI_API_KEY') || 'AIzaSyBDTFMYIWpckHC714g2dFiXg9fsWdBLK0I');
+    const [apiKey, setApiKey] = useState(() => localStorage.getItem('GEMINI_API_KEY') || import.meta.env.VITE_GEMINI_API_KEY || '');
 
     // Audio Settings
     const [audioBitrate, setAudioBitrate] = useState(128000); // 128 kbps default
+
     const [selectedMicId, setSelectedMicId] = useState('default');
     const [audioDevices, setAudioDevices] = useState([]);
     const [noiseSuppression, setNoiseSuppression] = useState(true);
+
+    // Webcam State
+    const [webcamEnabled, setWebcamEnabled] = useState(false);
+    const [selectedWebcamId, setSelectedWebcamId] = useState('default');
+    const [videoInputDevices, setVideoInputDevices] = useState([]);
 
     // Video Settings
     const [videoResolution, setVideoResolution] = useState('1080p'); // 4k, 2k, 1080p, 720p, 480p
@@ -52,13 +58,17 @@ function App() {
     useEffect(() => {
         const getDevices = async () => {
             try {
-                // Request permission first to get labels
-                await navigator.mediaDevices.getUserMedia({ audio: true });
+                // Request permissions to get labels
+                await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
                 const devices = await navigator.mediaDevices.enumerateDevices();
-                const mics = devices.filter(d => d.kind === 'audioinput');
-                setAudioDevices(mics);
+                setAudioDevices(devices.filter(d => d.kind === 'audioinput'));
+                setVideoInputDevices(devices.filter(d => d.kind === 'videoinput'));
             } catch (e) {
-                console.warn("Failed to enumerate audio devices:", e);
+                console.warn("Failed to enumerate devices:", e);
+                // Try enumerating anyway in case we have partial permissions
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                setAudioDevices(devices.filter(d => d.kind === 'audioinput'));
+                setVideoInputDevices(devices.filter(d => d.kind === 'videoinput'));
             }
         };
         getDevices();
@@ -344,86 +354,106 @@ function App() {
         }
     };
 
-    const createCroppedStream = (originalStream, rect) => {
-        // ... (Keep existing implementation, but remove audio handling from here since we'll mix it at top level)
-        // Actually, we can just return the video part here and add audio later
-        const videoTrack = originalStream.getVideoTracks()[0];
-        const { width: videoWidth, height: videoHeight } = videoTrack.getSettings();
+    // --- Helper for Composed Stream (Webcam + Screen + Crop) ---
+    const createComposedStream = (screenStream, webcamStream = null, cropRect = null) => {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d', { alpha: false }); // Optimize for video
 
-        // Calculate scaling factor between logical pixels (rect) and physical pixels (video stream)
-        const scaleX = videoWidth / window.screen.width;
-        const scaleY = videoHeight / window.screen.height;
+        const screenVideo = document.createElement('video');
+        screenVideo.srcObject = screenStream;
+        screenVideo.muted = true;
+        screenVideo.play();
 
-        const scaledRect = {
-            x: rect.x * scaleX,
-            y: rect.y * scaleY,
-            width: rect.width * scaleX,
-            height: rect.height * scaleY
+        let webcamVideo = null;
+        if (webcamStream) {
+            webcamVideo = document.createElement('video');
+            webcamVideo.srcObject = webcamStream;
+            webcamVideo.muted = true;
+            webcamVideo.play();
+        }
+
+        // Setup dimensions once screen video is ready
+        const { width: sW, height: sH } = screenStream.getVideoTracks()[0].getSettings();
+
+        // Initial size guess
+        let width = cropRect ? cropRect.width : (sW || 1920);
+        let height = cropRect ? cropRect.height : (sH || 1080);
+
+        canvas.width = width;
+        canvas.height = height;
+
+        const draw = () => {
+            if (!mediaRecorderRef.current || mediaRecorderRef.current.state === 'inactive') {
+                // Cleanup
+                screenVideo.srcObject = null;
+                screenVideo.remove();
+                if (webcamVideo) {
+                    webcamVideo.srcObject = null;
+                    webcamVideo.remove();
+                }
+                return;
+            }
+
+            if (screenVideo.readyState === screenVideo.HAVE_ENOUGH_DATA) {
+                if (!cropRect && (canvas.width !== screenVideo.videoWidth || canvas.height !== screenVideo.videoHeight)) {
+                    canvas.width = screenVideo.videoWidth;
+                    canvas.height = screenVideo.videoHeight;
+                }
+
+                ctx.drawImage(
+                    screenVideo,
+                    cropRect ? cropRect.x : 0,
+                    cropRect ? cropRect.y : 0,
+                    cropRect ? cropRect.width : screenVideo.videoWidth,
+                    cropRect ? cropRect.height : screenVideo.videoHeight,
+                    0, 0, canvas.width, canvas.height
+                );
+
+                // Draw Webcam Overlay
+                if (webcamVideo && webcamVideo.readyState === webcamVideo.HAVE_ENOUGH_DATA) {
+                    // Position: Bottom Right, 20% width
+                    const camW = canvas.width * 0.2;
+                    const camH = camW * (webcamVideo.videoHeight / webcamVideo.videoWidth); // keep aspect ratio
+                    const margin = 20;
+                    const camX = canvas.width - camW - margin;
+                    const camY = canvas.height - camH - margin;
+
+                    // Rounded corners/border for webcam
+                    ctx.save();
+                    ctx.beginPath();
+                    ctx.roundRect(camX, camY, camW, camH, 15);
+                    ctx.clip();
+                    ctx.drawImage(webcamVideo, camX, camY, camW, camH);
+                    ctx.restore();
+
+                    // Optional Border
+                    ctx.beginPath();
+                    ctx.roundRect(camX, camY, camW, camH, 15);
+                    ctx.lineWidth = 4;
+                    ctx.strokeStyle = '#6366f1'; // Indigo-500
+                    ctx.stroke();
+                }
+            }
+            requestAnimationFrame(draw);
         };
 
-        const canvas = document.createElement('canvas');
-        canvas.width = scaledRect.width;
-        canvas.height = scaledRect.height;
-        const ctx = canvas.getContext('2d');
-        const video = document.createElement('video');
-        video.srcObject = originalStream;
-        video.muted = true;
+        requestAnimationFrame(draw);
 
-        // Critical Fix: Append to DOM to ensure playback continues in background/when scaling
-        video.style.position = 'fixed';
-        video.style.top = '0';
-        video.style.left = '0';
-        video.style.opacity = '0';
-        video.style.pointerEvents = 'none';
-        video.style.zIndex = '-1';
-        document.body.appendChild(video);
-
-        return new Promise((resolve) => {
-            video.onloadedmetadata = () => {
-                video.play();
-
-                const draw = () => {
-                    if (video.paused || video.ended) return;
-                    ctx.drawImage(
-                        video,
-                        scaledRect.x, scaledRect.y, scaledRect.width, scaledRect.height, // Source
-                        0, 0, scaledRect.width, scaledRect.height // Destination
-                    );
-                    animationFrameRef.current = requestAnimationFrame(draw);
-                };
-                draw();
-
-                const stream = canvas.captureStream(60);
-
-                // Cleanup when stream ends
-                const cleanup = () => {
-                    if (video.parentNode) {
-                        document.body.removeChild(video);
-                    }
-                    if (animationFrameRef.current) {
-                        cancelAnimationFrame(animationFrameRef.current);
-                    }
-                };
-
-                stream.getVideoTracks()[0].onended = cleanup;
-                // Also hook into the original stream ending if possible, but the local track stop usually triggers this.
-
-                resolve(stream);
-            };
-        });
+        const stream = canvas.captureStream(frameRate || 60);
+        return stream;
     };
 
-    const handleStartRecording = async (sourceOverride) => {
+    const handleStartRecording = async (providedSource = null) => {
         try {
-            const sourceToUse = sourceOverride || selectedSource;
+            const sourceToUse = providedSource || selectedSource;
 
             if (!sourceToUse) {
                 await handleSelectScreen();
                 return;
             }
 
-            if (sourceOverride) {
-                setSelectedSource(sourceOverride);
+            if (providedSource) {
+                setSelectedSource(providedSource);
             }
 
             // Sync state for immediate logic
@@ -437,10 +467,8 @@ function App() {
             setPreviewUrl(null);
             setAiAnalysis(null); // Reset AI
             setTrimMessage(null); // Reset Trim
-            setTrimMessage(null); // Reset Trim
             initialChunkRef.current = null; // Reset Header
 
-            // ... (keep stream setup)
             recordingStartTimeRef.current = Date.now();
 
             // 1. Get Video Stream (+ System Audio via constraints)
@@ -494,35 +522,21 @@ function App() {
                 };
             }
 
-            let videoStream = await navigator.mediaDevices.getUserMedia({
+            let screenStream = await navigator.mediaDevices.getUserMedia({
                 audio: audioConstraints,
                 video: videoConstraints
             });
 
-            // Crop if needed
-            if (sourceToUse.id === 'area' && sourceToUse.rect) {
-                // When we scale/crop, we lose the audio track from the original videoStream if we just take canvas stream
-                // So we need to preserve it.
-                const croppedVideoStream = await createCroppedStream(videoStream, sourceToUse.rect);
-                // The cropped stream has no audio. We add it back later if main stream had it.
-                // We keep 'videoStream' as the source of audio.
-                // But we use 'croppedVideoStream' for video tracks.
-                // Actually, let's swap the video track.
-                const combined = new MediaStream();
-                croppedVideoStream.getVideoTracks().forEach(t => combined.addTrack(t));
-                videoStream.getAudioTracks().forEach(t => combined.addTrack(t));
-                videoStream = combined;
-            }
-
-            // 2. Mix Mic Audio if enabled
+            // 2. Audio Mixing (System + Mic)
             const audioContext = new AudioContext();
             const dest = audioContext.createMediaStreamDestination();
             let hasAudioMixing = false;
 
-            // Verify if we got system audio from the main call
-            if (videoStream.getAudioTracks().length > 0) {
-                const sysSrc = audioContext.createMediaStreamSource(videoStream);
-                sysSrc.connect(dest);
+            if (systemAudioEnabled && screenStream.getAudioTracks().length > 0) {
+                const sysSrc = audioContext.createMediaStreamSource(screenStream);
+                const sysGain = audioContext.createGain();
+                sysGain.gain.value = 0.7; // Lower system audio slightly so voice pops
+                sysSrc.connect(sysGain).connect(dest);
                 hasAudioMixing = true;
             }
 
@@ -549,14 +563,43 @@ function App() {
                 }
             }
 
-            // 3. Final Stream Assembly
+            // 3. Webcam Capture (if enabled)
+            let webcamStream = null;
+            if (webcamEnabled) {
+                try {
+                    const camConstraints = {
+                        video: {
+                            deviceId: selectedWebcamId !== 'default' ? { exact: selectedWebcamId } : undefined,
+                            width: { ideal: 1280 },
+                            height: { ideal: 720 }
+                        },
+                        audio: false
+                    };
+                    webcamStream = await navigator.mediaDevices.getUserMedia(camConstraints);
+                } catch (e) {
+                    console.warn("Webcam capture failed:", e);
+                    // maybe alert user?
+                }
+            }
+
+            // 4. Final Stream Composition
             const finalStream = new MediaStream();
-            videoStream.getVideoTracks().forEach(track => finalStream.addTrack(track));
+
+            // If we need custom composition (Area crop OR Webcam overlay), use the canvas helper
+            const sourceRect = (sourceToUse.id === 'area' && sourceToUse.rect) ? sourceToUse.rect : null;
+
+            if (sourceRect || webcamStream) {
+                const composedVideoStream = createComposedStream(screenStream, webcamStream, sourceRect);
+                composedVideoStream.getVideoTracks().forEach(track => finalStream.addTrack(track));
+            } else {
+                // Direct passthrough if no processing needed
+                screenStream.getVideoTracks().forEach(track => finalStream.addTrack(track));
+            }
 
             if (hasAudioMixing) {
                 // Use the mixed audio track
                 dest.stream.getAudioTracks().forEach(track => finalStream.addTrack(track));
-            } else if (videoStream.getAudioTracks().length > 0) {
+            } else if (screenStream.getAudioTracks().length > 0) {
                 // If we didn't use audioContext mix for some reason but have system audio (e.g. mic was off), use it directly
                 // But above logic covers this.
             }
@@ -965,6 +1008,13 @@ function App() {
                                     title={micEnabled ? "Mic On" : "Mic Off"}
                                 >
                                     {micEnabled ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
+                                </button>
+                                <button
+                                    onClick={() => setWebcamEnabled(!webcamEnabled)}
+                                    className={`p-2 rounded-full transition-all duration-300 ${webcamEnabled ? 'bg-indigo-500/20 text-indigo-400' : 'bg-slate-700/50 text-slate-400 hover:text-slate-200'}`}
+                                    title={webcamEnabled ? "Webcam On" : "Webcam Off"}
+                                >
+                                    {webcamEnabled ? <Camera className="w-5 h-5" /> : <CameraOff className="w-5 h-5" />}
                                 </button>
                             </div>
                         </div>
@@ -1438,6 +1488,23 @@ function App() {
                                                             <option value="720p">HD (720p)</option>
                                                             <option value="480p">SD (480p)</option>
                                                         </select>
+                                                    </div>
+
+                                                    <div className="bg-slate-800/40 p-5 rounded-2xl border border-slate-700/50">
+                                                        <label className="block text-sm font-medium text-slate-300 mb-3">Webcam Source</label>
+                                                        <select
+                                                            value={selectedWebcamId}
+                                                            onChange={(e) => setSelectedWebcamId(e.target.value)}
+                                                            className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all hover:border-slate-600"
+                                                        >
+                                                            <option value="default">Default Webcam</option>
+                                                            {videoInputDevices.map(device => (
+                                                                <option key={device.deviceId} value={device.deviceId}>
+                                                                    {device.label || `Camera ${device.deviceId.slice(0, 5)}...`}
+                                                                </option>
+                                                            ))}
+                                                        </select>
+                                                        <p className="text-xs text-slate-500 mt-2">Webcam will appear as a picture-in-picture overlay during recording.</p>
                                                     </div>
 
                                                     <div className="bg-slate-800/40 p-5 rounded-2xl border border-slate-700/50">
