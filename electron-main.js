@@ -33,9 +33,24 @@ function createWindow() {
     },
     autoHideMenuBar: true,
     backgroundColor: '#0f172a',
-    titleDisplayStyle: 'hiddenInset', // Mac style
-    // frame: false, // Custom UI handles drag? Maybe later.
+    frame: false, // Custom UI
+    titleBarStyle: 'hidden', // This helps with some drag behaviors
     icon: path.join(__dirname, app.isPackaged ? 'dist/icon.png' : 'public/icon.png')
+  });
+
+  // Window Control Handlers
+  ipcMain.on('WINDOW_MINIMIZE', () => {
+    mainWindow?.minimize();
+  });
+  ipcMain.on('WINDOW_MAXIMIZE', () => {
+    if (mainWindow?.isMaximized()) {
+      mainWindow.unmaximize();
+    } else {
+      mainWindow?.maximize();
+    }
+  });
+  ipcMain.on('WINDOW_CLOSE', () => {
+    mainWindow?.close();
   });
 
   mainWindow.on('closed', () => {

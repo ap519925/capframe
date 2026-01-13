@@ -11,4 +11,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     updateOverlayTime: (time) => ipcRenderer.send('UPDATE_OVERLAY_TIME', time),
     getCurrentScreenId: () => ipcRenderer.invoke('GET_CURRENT_SCREEN_ID'),
     trimVideo: (arrayBuffer, startTime, duration) => ipcRenderer.invoke('TRIM_VIDEO', { arrayBuffer, startTime, duration }),
+    minimizeWindow: () => ipcRenderer.send('WINDOW_MINIMIZE'),
+    maximizeWindow: () => ipcRenderer.send('WINDOW_MAXIMIZE'),
+    closeWindow: () => ipcRenderer.send('WINDOW_CLOSE'),
 });

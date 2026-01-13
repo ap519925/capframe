@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Monitor, Crop, CheckCircle, Square, Play, Download, Settings, Mic, MicOff, Video, Sliders, Share2, Youtube, Facebook, UploadCloud, Sparkles, Rewind, Clock, Laptop, Volume2, Film, Wand2, X, Camera, CameraOff } from 'lucide-react';
+import { Monitor, Crop, CheckCircle, Square, Play, Download, Settings, Mic, MicOff, Video, Sliders, Share2, Youtube, Facebook, UploadCloud, Sparkles, Rewind, Clock, Laptop, Volume2, Film, Wand2, X, Camera, CameraOff, Minus } from 'lucide-react';
 
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
@@ -1029,45 +1029,77 @@ function App() {
             <main className="relative z-10 container mx-auto px-4 py-8 flex items-center justify-center min-h-screen">
                 <div className="w-full max-w-3xl bg-slate-900/60 backdrop-blur-2xl rounded-3xl border border-white/5 shadow-2xl overflow-hidden ring-1 ring-white/10">
 
-                    {/* Header */}
-                    <div className="px-8 py-5 border-b border-white/5 flex justify-between items-center bg-slate-900/40">
-                        <div className="flex items-center gap-3">
-                            <div className="p-2 bg-gradient-to-tr from-indigo-500 to-purple-500 rounded-lg shadow-lg shadow-indigo-500/20">
-                                <Video className="w-5 h-5 text-white" />
+                    {/* Custom Title Bar */}
+                    <div className="pl-6 pr-4 py-3 border-b border-white/5 flex justify-between items-center bg-slate-900/80 backdrop-blur-xl select-none" style={{ WebkitAppRegion: 'drag' }}>
+                        <div className="flex items-center gap-3 opacity-80 hover:opacity-100 transition-opacity">
+                            <div className="p-1.5 bg-gradient-to-tr from-indigo-500 to-purple-500 rounded-md shadow-lg shadow-indigo-500/20">
+                                <Video className="w-3.5 h-3.5 text-white" />
                             </div>
-                            <h1 className="text-lg font-bold bg-gradient-to-r from-white to-slate-400 bg-clip-text text-transparent">
-                                Capframe
+                            <h1 className="text-sm font-bold text-slate-200 tracking-wide font-mono">
+                                CAPFRAME
                             </h1>
                         </div>
-                        <div className="flex items-center gap-2">
-                            <button
-                                onClick={() => setShowSettings(true)}
-                                className={`p-2 rounded-full transition-all duration-300 ${!apiKey ? 'text-orange-400 bg-orange-500/10 animate-pulse' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}
-                                title="Settings"
-                            >
-                                <Settings className="w-5 h-5" />
-                            </button>
-                            <div className="flex items-center gap-2">
+
+                        {/* Controls Container - Non-Draggable Area */}
+                        <div className="flex items-center gap-3" style={{ WebkitAppRegion: 'no-drag' }}>
+
+                            {/* Feature Toggles */}
+                            <div className="flex items-center gap-1 bg-slate-800/50 rounded-lg p-1 border border-white/5 mr-2">
                                 <button
                                     onClick={() => setSystemAudioEnabled(!systemAudioEnabled)}
-                                    className={`p-2 rounded-full transition-all duration-300 ${systemAudioEnabled ? 'bg-blue-500/20 text-blue-400' : 'bg-slate-700/50 text-slate-400 hover:text-slate-200'}`}
+                                    className={`p-1.5 rounded-md transition-all duration-200 ${systemAudioEnabled ? 'bg-blue-500/20 text-blue-400 shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
                                     title={systemAudioEnabled ? "System Audio On" : "System Audio Off"}
                                 >
-                                    <Laptop className="w-5 h-5" />
+                                    <Laptop className="w-4 h-4" />
                                 </button>
                                 <button
                                     onClick={() => setMicEnabled(!micEnabled)}
-                                    className={`p-2 rounded-full transition-all duration-300 ${micEnabled ? 'bg-indigo-500/20 text-indigo-400' : 'bg-slate-700/50 text-slate-400 hover:text-slate-200'}`}
+                                    className={`p-1.5 rounded-md transition-all duration-200 ${micEnabled ? 'bg-indigo-500/20 text-indigo-400 shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
                                     title={micEnabled ? "Mic On" : "Mic Off"}
                                 >
-                                    {micEnabled ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
+                                    {micEnabled ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
                                 </button>
                                 <button
                                     onClick={() => setWebcamEnabled(!webcamEnabled)}
-                                    className={`p-2 rounded-full transition-all duration-300 ${webcamEnabled ? 'bg-indigo-500/20 text-indigo-400' : 'bg-slate-700/50 text-slate-400 hover:text-slate-200'}`}
+                                    className={`p-1.5 rounded-md transition-all duration-200 ${webcamEnabled ? 'bg-purple-500/20 text-purple-400 shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
                                     title={webcamEnabled ? "Webcam On" : "Webcam Off"}
                                 >
-                                    {webcamEnabled ? <Camera className="w-5 h-5" /> : <CameraOff className="w-5 h-5" />}
+                                    {webcamEnabled ? <Camera className="w-4 h-4" /> : <CameraOff className="w-4 h-4" />}
+                                </button>
+                            </div>
+
+                            <button
+                                onClick={() => setShowSettings(true)}
+                                className={`p-2 rounded-lg transition-all duration-200 ${!apiKey ? 'text-orange-400 bg-orange-500/10 animate-pulse' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}
+                                title="Settings"
+                            >
+                                <Settings className="w-4 h-4" />
+                            </button>
+
+                            <div className="w-[1px] h-4 bg-white/10 mx-1"></div>
+
+                            {/* Window Controls */}
+                            <div className="flex items-center gap-1">
+                                <button
+                                    onClick={() => window.electronAPI?.minimizeWindow()}
+                                    className="p-2 text-slate-500 hover:text-slate-200 hover:bg-white/5 rounded-lg transition-colors"
+                                    title="Minimize"
+                                >
+                                    <Minus className="w-4 h-4" />
+                                </button>
+                                <button
+                                    onClick={() => window.electronAPI?.maximizeWindow()}
+                                    className="p-2 text-slate-500 hover:text-slate-200 hover:bg-white/5 rounded-lg transition-colors"
+                                    title="Maximize"
+                                >
+                                    <Square className="w-4 h-4" />
+                                </button>
+                                <button
+                                    onClick={() => window.electronAPI?.closeWindow()}
+                                    className="p-2 text-slate-500 hover:text-red-300 hover:bg-red-500/20 rounded-lg transition-colors"
+                                    title="Close"
+                                >
+                                    <X className="w-4 h-4" />
                                 </button>
                             </div>
                         </div>
