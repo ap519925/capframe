@@ -885,11 +885,18 @@ function App() {
                 console.log("Processing with FFmpeg to fix timestamp gaps...");
                 const arrayBuffer = await rawBlob.arrayBuffer();
 
+                // Calculate the relative seek time (in seconds) from the start of the recording session
+                // We constructed a blob that technically starts at 0 (header) but has a gap until our chunk start time.
+                // We need to tell FFmpeg to seek to where our chunks actually begin.
+                const seekTime = Math.max(0, (cutoff - recordingStartTimeRef.current) / 1000);
+
+                console.log(`Deep trimming relative to recording start: ${seekTime}s`);
+
                 // For flashback, we want to keep all the video and just fix timestamp issues
                 // We trim from 0 to the desired duration to ensure continuous playback
                 const trimmedBuffer = await window.electronAPI.trimVideo(
                     arrayBuffer,
-                    0, // Start from beginning
+                    seekTime, // Start from the calculated relative time
                     replayDurationRef.current // Keep the desired duration
                 );
                 finalBlob = new Blob([trimmedBuffer], { type: 'video/webm; codecs=vp9' });
