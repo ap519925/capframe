@@ -26,10 +26,6 @@ jobs:
 
       - name: Build and Package
         run: npm run dist
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # If Electron Builder is set to publish, this token allows it. 
-          # But we will use a separate step to be sure.
 
       - name: Upload Release Assets
         uses: softprops/action-gh-release@v1
@@ -39,5 +35,6 @@ jobs:
             release/*.exe
             release/*.blockmap
             release/latest.yml
+            release/*.appx
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
