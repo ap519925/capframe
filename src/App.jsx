@@ -87,6 +87,9 @@ function App() {
 
     const [savedClips, setSavedClips] = useState([]);
 
+    // Photo Mode State
+    const [isPhotoMode, setIsPhotoMode] = useState(false);
+
     // Countdown State
     const [countdown, setCountdown] = useState(null);
     // Refs
@@ -389,19 +392,20 @@ function App() {
     // --- Helper for Composed Stream (Webcam + Screen + Crop) ---
     const createComposedStream = (screenStream, webcamStream = null, cropRect = null) => {
         const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d', { alpha: false });
+        const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: false });
 
         // Helper to create and safeguard video elements
         const createVideoEl = (stream) => {
             const v = document.createElement('video');
             v.srcObject = stream;
             v.muted = true;
+            v.playsInline = true;
             // append to body hidden to ensure it plays on all browsers/electron versions
             v.style.position = 'fixed';
             v.style.top = '-9999px';
             v.style.opacity = '0';
+            v.style.pointerEvents = 'none';
             document.body.appendChild(v);
-            v.play().catch(e => console.error("Video play failed", e));
             return v;
         };
 
@@ -420,78 +424,136 @@ function App() {
         canvas.width = width;
         canvas.height = height;
 
+        let isInitialized = false;
+        let animationFrameId = null;
+
         const draw = () => {
-            // Check if recording stopped (simple check via ref or checking streams)
-            // Actually, we should check if screenStream is active
+            // Check if recording stopped
             if (screenStream.getTracks().every(t => t.readyState === 'ended')) {
                 // Cleanup
-                if (webcamVideo) { document.body.removeChild(webcamVideo); webcamVideo = null; }
-                if (screenVideo) { document.body.removeChild(screenVideo); }
+                if (webcamVideo && webcamVideo.parentNode) {
+                    webcamVideo.srcObject = null;
+                    document.body.removeChild(webcamVideo);
+                    webcamVideo = null;
+                }
+                if (screenVideo && screenVideo.parentNode) {
+                    screenVideo.srcObject = null;
+                    document.body.removeChild(screenVideo);
+                }
+                if (animationFrameId) {
+                    cancelAnimationFrame(animationFrameId);
+                }
                 return;
             }
 
-            if (screenVideo.readyState >= 2) { // HAVE_CURRENT_DATA
-                // Auto-resize canvas if screen size changes (and not cropping)
-                if (!cropRect && (screenVideo.videoWidth && (canvas.width !== screenVideo.videoWidth || canvas.height !== screenVideo.videoHeight))) {
-                    canvas.width = screenVideo.videoWidth;
-                    canvas.height = screenVideo.videoHeight;
-                    width = canvas.width;
-                    height = canvas.height;
+            // Wait for video to be ready
+            if (screenVideo.readyState >= screenVideo.HAVE_CURRENT_DATA) {
+                // Initialize canvas size once we know the video dimensions
+                if (!isInitialized && screenVideo.videoWidth > 0) {
+                    if (!cropRect) {
+                        canvas.width = screenVideo.videoWidth;
+                        canvas.height = screenVideo.videoHeight;
+                        width = canvas.width;
+                        height = canvas.height;
+                    }
+                    isInitialized = true;
+                    console.log(`Canvas initialized: ${width}x${height}, Crop: ${cropRect ? 'Yes' : 'No'}`);
                 }
 
-                ctx.drawImage(
-                    screenVideo,
-                    cropRect ? cropRect.x : 0,
-                    cropRect ? cropRect.y : 0,
-                    cropRect ? cropRect.width : screenVideo.videoWidth,
-                    cropRect ? cropRect.height : screenVideo.videoHeight,
-                    0, 0, canvas.width, canvas.height
-                );
+                // Clear canvas
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                // Draw screen capture (cropped if needed)
+                try {
+                    if (cropRect) {
+                        // For cropping, we need to calculate the proper source coordinates
+                        // The cropRect contains screen pixel coordinates
+                        // We need to map these to video coordinates
+                        const scaleX = screenVideo.videoWidth / settings.width;
+                        const scaleY = screenVideo.videoHeight / settings.height;
+
+                        const srcX = cropRect.x * scaleX;
+                        const srcY = cropRect.y * scaleY;
+                        const srcW = cropRect.width * scaleX;
+                        const srcH = cropRect.height * scaleY;
+
+                        ctx.drawImage(
+                            screenVideo,
+                            srcX, srcY, srcW, srcH,
+                            0, 0, canvas.width, canvas.height
+                        );
+                    } else {
+                        ctx.drawImage(screenVideo, 0, 0, canvas.width, canvas.height);
+                    }
+                } catch (e) {
+                    console.error("Error drawing screen video:", e);
+                }
 
                 // Draw Webcam Overlay
-                if (webcamVideo && webcamVideo.readyState >= 2) {
-                    // PIP Logic: Bottom Right, 20% width
-                    const camW = width * 0.25; // Slightly larger: 25%
-                    const camH = camW * (webcamVideo.videoHeight / webcamVideo.videoWidth);
-                    const margin = 30;
-                    const camX = width - camW - margin;
-                    const camY = height - camH - margin;
+                if (webcamVideo && webcamVideo.readyState >= webcamVideo.HAVE_CURRENT_DATA && webcamVideo.videoWidth > 0) {
+                    try {
+                        // PIP Logic: Bottom Right, 25% width
+                        const camW = width * 0.25;
+                        const camH = camW * (webcamVideo.videoHeight / webcamVideo.videoWidth);
+                        const margin = 30;
+                        const camX = width - camW - margin;
+                        const camY = height - camH - margin;
 
-                    // Shadow/Border background
-                    ctx.save();
-                    ctx.shadowColor = "rgba(0,0,0,0.5)";
-                    ctx.shadowBlur = 20;
+                        // Shadow/Border background
+                        ctx.save();
+                        ctx.shadowColor = "rgba(0,0,0,0.5)";
+                        ctx.shadowBlur = 20;
 
-                    // Clip Round Rect
-                    ctx.beginPath();
-                    ctx.roundRect(camX, camY, camW, camH, 20);
-                    ctx.clip();
+                        // Clip Round Rect
+                        ctx.beginPath();
+                        ctx.roundRect(camX, camY, camW, camH, 20);
+                        ctx.clip();
 
-                    // Draw Video
-                    ctx.drawImage(webcamVideo, camX, camY, camW, camH);
-                    ctx.restore();
+                        // Draw Video
+                        ctx.drawImage(webcamVideo, camX, camY, camW, camH);
+                        ctx.restore();
 
-                    // Border
-                    ctx.beginPath();
-                    ctx.roundRect(camX, camY, camW, camH, 20);
-                    ctx.lineWidth = 6;
-                    ctx.strokeStyle = '#6366f1'; // Indigo-500
-                    ctx.stroke();
+                        // Border
+                        ctx.beginPath();
+                        ctx.roundRect(camX, camY, camW, camH, 20);
+                        ctx.lineWidth = 6;
+                        ctx.strokeStyle = '#6366f1'; // Indigo-500
+                        ctx.stroke();
+                    } catch (e) {
+                        console.error("Error drawing webcam video:", e);
+                    }
                 }
             }
-            requestAnimationFrame(draw);
+
+            animationFrameId = requestAnimationFrame(draw);
         };
 
-        requestAnimationFrame(draw);
+        // Start video playback and wait for them to be ready
+        Promise.all([
+            screenVideo.play().catch(e => console.error("Screen video play failed:", e)),
+            webcamVideo ? webcamVideo.play().catch(e => console.error("Webcam video play failed:", e)) : Promise.resolve()
+        ]).then(() => {
+            console.log("Videos started playing, beginning draw loop");
+            requestAnimationFrame(draw);
+        });
 
-        // 60FPS output
-        const stream = canvas.captureStream(frameRate || 60);
+        // Use specified frame rate or default to 60
+        const captureFrameRate = frameRate || 60;
+        const stream = canvas.captureStream(captureFrameRate);
 
         // Link stream stopping to cleanup
-        // Note: This cleanup might be redundant with the loop check but good for safety
         stream.getVideoTracks()[0].onended = () => {
-            if (webcamVideo && webcamVideo.parentNode) document.body.removeChild(webcamVideo);
-            if (screenVideo && screenVideo.parentNode) document.body.removeChild(screenVideo);
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+            }
+            if (webcamVideo && webcamVideo.parentNode) {
+                webcamVideo.srcObject = null;
+                document.body.removeChild(webcamVideo);
+            }
+            if (screenVideo && screenVideo.parentNode) {
+                screenVideo.srcObject = null;
+                document.body.removeChild(screenVideo);
+            }
         };
 
         return stream;
@@ -788,48 +850,55 @@ function App() {
 
         if (validChunksInfo.length === 0) {
             setTrimMessage("Error: No video data captured.");
+            setTimeout(() => setTrimMessage(null), 2000);
             return;
         }
 
         try {
-            // 1. Construct the raw blob (Header + Gap + Recent Chunks)
+            console.log(`Saving ${validChunksInfo.length} chunks from flashback buffer`);
+
+            // 1. Construct the blob from all chunks
+            // Important: For WebM with gaps, we need to ensure proper structure
             const videoChunks = [];
-            if (initialChunkRef.current) {
+
+            // First, add the initialization segment if we have it and it's not in the valid chunks
+            const hasInitChunkInValid = validChunksInfo.some(c => c.data === initialChunkRef.current);
+
+            if (initialChunkRef.current && !hasInitChunkInValid) {
                 videoChunks.push(initialChunkRef.current);
+                console.log("Added initialization chunk separately");
             }
 
-            validChunksInfo.forEach(c => {
-                if (c.data !== initialChunkRef.current) {
-                    videoChunks.push(c.data);
-                }
+            // Then add all valid chunks
+            validChunksInfo.forEach((c, idx) => {
+                videoChunks.push(c.data);
             });
 
-            const rawBlob = new Blob(videoChunks, { type: 'video/webm' });
-            const arrayBuffer = await rawBlob.arrayBuffer();
+            const rawBlob = new Blob(videoChunks, { type: 'video/webm; codecs=vp9' });
+            console.log(`Raw blob size: ${(rawBlob.size / 1024 / 1024).toFixed(2)} MB`);
 
-            // 2. Calculate Start Time for FFmpeg
-            // validChunksInfo[0].timestamp is the time the chunk *finished* (ondataavailable).
-            // We assume chunks are approx 1s duration (set in mediaRecorder.start(1000)).
-            // So the content starts approx 1s before the timestamp.
-            // We calculate the offset relative to the actual recording start.
-            const firstChunkTimestamp = validChunksInfo[0].timestamp;
-            let startTimeSeconds = (firstChunkTimestamp - recordingStartTimeRef.current - 1000) / 1000;
-            if (startTimeSeconds < 0) startTimeSeconds = 0;
-
-            console.log(`Flashback Save: Seeking to ${startTimeSeconds}s`);
-
-            // 3. Process with FFmpeg to fix timestamps ("trim" the gap)
-            // If electron API is available, use it. Otherwise fallback to raw download (likely broken but better than nothing).
+            // 2. Process with FFmpeg to fix any timestamp gaps and re-encode
+            // This is CRITICAL for flashback mode to work properly
             let finalBlob = rawBlob;
 
             if (window.electronAPI && window.electronAPI.trimVideo) {
-                const trimmedBuffer = await window.electronAPI.trimVideo(arrayBuffer, startTimeSeconds, replayDurationRef.current);
-                finalBlob = new Blob([trimmedBuffer], { type: 'video/webm' });
+                console.log("Processing with FFmpeg to fix timestamp gaps...");
+                const arrayBuffer = await rawBlob.arrayBuffer();
+
+                // For flashback, we want to keep all the video and just fix timestamp issues
+                // We trim from 0 to the desired duration to ensure continuous playback
+                const trimmedBuffer = await window.electronAPI.trimVideo(
+                    arrayBuffer,
+                    0, // Start from beginning
+                    replayDurationRef.current // Keep the desired duration
+                );
+                finalBlob = new Blob([trimmedBuffer], { type: 'video/webm; codecs=vp9' });
+                console.log(`Processed blob size: ${(finalBlob.size / 1024 / 1024).toFixed(2)} MB`);
             } else {
-                console.warn("Electron API not available, saving raw stream (may have playback issues due to timestamp gaps).");
+                console.warn("Electron API not available. Flashback videos may have playback issues.");
             }
 
-            // 4. Store in List (instead of auto-download)
+            // 3. Store in List
             const finalUrl = URL.createObjectURL(finalBlob);
             const newClip = {
                 id: Date.now(),
@@ -847,6 +916,7 @@ function App() {
         } catch (err) {
             console.error("Save Replay Error:", err);
             setTrimMessage("Save Failed: " + err.message);
+            setTimeout(() => setTrimMessage(null), 3000);
         }
     };
 
@@ -985,6 +1055,112 @@ function App() {
                     rect: rect
                 });
             }
+        }
+    };
+
+    const handleTakeScreenshot = async () => {
+        try {
+            if (!selectedSource) {
+                await handleSelectScreen();
+                return;
+            }
+
+            setError(null);
+
+            // Determine the source to capture
+            const sourceId = selectedSource.id;
+            let activeSourceId = sourceId;
+            let cropRect = null;
+
+            // If area mode, get the full screen first then crop
+            if (sourceId === 'area' && selectedSource.rect) {
+                const sources = await window.electronAPI.getSources();
+                const screenSource = sources[0];
+                activeSourceId = screenSource.id;
+                cropRect = selectedSource.rect;
+            }
+
+            // Set up video constraints
+            const videoConstraints = {
+                mandatory: {
+                    chromeMediaSource: 'desktop',
+                    chromeMediaSourceId: activeSourceId,
+                    maxWidth: 4000,
+                    maxHeight: 4000
+                }
+            };
+
+            // Capture the screen
+            const screenStream = await navigator.mediaDevices.getUserMedia({
+                audio: false,
+                video: videoConstraints
+            });
+
+            // Create a video element to render the stream
+            const video = document.createElement('video');
+            video.srcObject = screenStream;
+            video.muted = true;
+            video.style.position = 'fixed';
+            video.style.top = '-9999px';
+            document.body.appendChild(video);
+            await video.play();
+
+            // Wait for video to have dimensions
+            await new Promise((resolve) => {
+                if (video.videoWidth > 0) {
+                    resolve();
+                } else {
+                    video.onloadedmetadata = resolve;
+                }
+            });
+
+            // Create canvas to capture the frame
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+
+            // Set canvas size based on crop or full screen
+            if (cropRect) {
+                canvas.width = cropRect.width;
+                canvas.height = cropRect.height;
+                ctx.drawImage(
+                    video,
+                    cropRect.x, cropRect.y, cropRect.width, cropRect.height,
+                    0, 0, canvas.width, canvas.height
+                );
+            } else {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            }
+
+            // Convert to data URL
+            const dataUrl = canvas.toDataURL('image/png');
+
+            // Clean up
+            screenStream.getTracks().forEach(track => track.stop());
+            document.body.removeChild(video);
+
+            // Save the screenshot
+            if (window.electronAPI && window.electronAPI.saveImage) {
+                const filename = `Screenshot-${new Date().toISOString().replace(/:/g, '-')}.png`;
+                const filepath = await window.electronAPI.saveImage(dataUrl, filename);
+                setTrimMessage(`Screenshot saved to ${filepath}`);
+                setTimeout(() => setTrimMessage(null), 3000);
+            } else {
+                // Fallback: trigger download
+                const a = document.createElement('a');
+                a.href = dataUrl;
+                a.download = `Screenshot-${new Date().toISOString().replace(/:/g, '-')}.png`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                setTrimMessage('Screenshot downloaded!');
+                setTimeout(() => setTrimMessage(null), 3000);
+            }
+
+        } catch (err) {
+            console.error("Screenshot Error:", err);
+            setError("Failed to take screenshot: " + err.message);
         }
     };
 
@@ -1130,8 +1306,29 @@ function App() {
                                 </div>
                             )}
 
+                            {/* Screenshot Mode Toggle */}
+                            {!isRecording && !replayBufferActive && !isReplayMode && !previewUrl && (
+                                <div className="flex items-center justify-between w-full bg-slate-800/40 p-4 rounded-xl border border-slate-700/50 mb-4">
+                                    <div className="flex items-center gap-3">
+                                        <div className={`p-2 rounded-lg ${isPhotoMode ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-700/30 text-slate-500'}`}>
+                                            <Camera className="w-5 h-5" />
+                                        </div>
+                                        <div className="text-left">
+                                            <div className="text-sm font-bold text-slate-200">Screenshot Mode</div>
+                                            <div className="text-xs text-slate-500">Capture a single frame</div>
+                                        </div>
+                                    </div>
+                                    <button
+                                        onClick={() => setIsPhotoMode(!isPhotoMode)}
+                                        className={`w-12 h-7 rounded-full p-1 transition-colors duration-300 ease-in-out border border-transparent ${isPhotoMode ? 'bg-emerald-600' : 'bg-slate-700'}`}
+                                    >
+                                        <div className={`w-5 h-5 bg-white rounded-full shadow-md transform transition-transform duration-300 ${isPhotoMode ? 'translate-x-5' : 'translate-x-0'}`} />
+                                    </button>
+                                </div>
+                            )}
+
                             {/* Flashback Mode Toggle */}
-                            {!isRecording && !replayBufferActive && (
+                            {!isRecording && !replayBufferActive && !isPhotoMode && (
                                 <div className="flex items-center justify-between w-full bg-slate-800/40 p-4 rounded-xl border border-slate-700/50 mb-4">
                                     <div className="flex items-center gap-3">
                                         <div className={`p-2 rounded-lg ${isReplayMode ? 'bg-indigo-500/20 text-indigo-400' : 'bg-slate-700/30 text-slate-500'}`}>
@@ -1161,8 +1358,6 @@ function App() {
                                                             // No, it uses state 'isReplayMode'. 
                                                             // So we rely on React re-render? No, inside the same event loop it's old.
                                                             // We should update the handler to accept a mode override or wait.
-                                                            // SIMPLER: Just set state, and let a useEffect trigger it? 
-                                                            // Or just call it, but we need to ensure 'isReplayMode' state is true during execution.
                                                             // Force param:
                                                             handleStartRecording(target, true); // Add 'isFlashbackOverride' param to handleStartRecording?
                                                         })
@@ -1214,26 +1409,14 @@ function App() {
                                 </div>
                             ) : (
                                 <>
-                                    <div className={`text-6xl font-mono font-medium tracking-tighter ${isRecording ? 'text-red-500 drop-shadow-[0_0_15px_rgba(239,68,68,0.5)]' : 'text-slate-500'}`}>
-                                        {formatTime(recordingTime)}
-                                    </div>
-                                    <div className="flex items-center gap-2 h-6">
-                                        {isRecording ? (
-                                            <span className="flex items-center gap-2 px-3 py-1 rounded-full bg-red-500/10 text-red-500 text-xs font-bold uppercase tracking-wider border border-red-500/20 animate-pulse">
-                                                <div className="w-1.5 h-1.5 bg-current rounded-full" />
-                                                Recording Live
-                                            </span>
-                                        ) : (
-                                            <span className="text-slate-500 text-sm font-medium">Ready</span>
-                                        )}
-                                    </div>
+                                    {/* This section is now handled by the new status/counter block above */}
                                 </>
                             )}
                         </div>
 
                         {/* Source Selection & Preview */}
                         {
-                            !isRecording && !previewUrl ? (
+                            !isRecording && !previewUrl && !isReplayMode ? (
                                 <div className="grid grid-cols-2 gap-4">
                                     <button
                                         onClick={handleSelectScreen}
@@ -1455,14 +1638,15 @@ function App() {
                                 </button>
                             ) : (
                                 <button
-                                    onClick={() => handleStartRecording(null)}
+                                    onClick={isPhotoMode ? handleTakeScreenshot : () => handleStartRecording(null)}
                                     className={`flex items-center gap-3 px-8 py-4 rounded-2xl font-semibold shadow-lg transition-all transform hover:scale-[1.02] active:scale-[0.98]
-                            ${selectedSource ? 'bg-white text-slate-900 shadow-white/10 hover:bg-slate-100' : 'bg-slate-700 text-slate-400 cursor-not-allowed'}
+                            ${selectedSource ? (isPhotoMode ? 'bg-indigo-600 text-white shadow-indigo-500/30 hover:bg-indigo-700' : 'bg-white text-slate-900 shadow-white/10 hover:bg-slate-100') : 'bg-slate-700 text-slate-400 cursor-not-allowed'}
                         `}
                                     disabled={!selectedSource}
                                 >
-                                    <div className={`w-3 h-3 rounded-full ${selectedSource ? 'bg-red-500 animate-pulse' : 'bg-slate-500'}`} />
-                                    Start Recording
+                                    {isPhotoMode ? <Camera className="w-6 h-6" /> : <div className="w-4 h-4 rounded-full bg-red-500 animate-pulse" />}
+                                    {isPhotoMode ? "Capture Screenshot" : "Start Recording"}
+                                    {!selectedSource && <span className="text-xs font-normal opacity-70 ml-1">(Select Source First)</span>}
                                 </button>
                             )}
                         </div>
@@ -1474,6 +1658,30 @@ function App() {
                                 </div>
                             )
                         }
+
+                        {/* Mode Switcher Footer Refinement */}
+                        {!isRecording && !previewUrl && !isReplayMode && !isPhotoMode && (
+                            <div className="flex justify-center flex-col items-center mt-4">
+                                <button
+                                    onClick={() => { setIsReplayMode(true); setReplayBufferActive(false); }}
+                                    className="text-xs text-slate-500 hover:text-amber-400 flex items-center gap-2 transition-colors"
+                                >
+                                    <Rewind className="w-3 h-3" /> Switch to Flashback Mode
+                                </button>
+                            </div>
+                        )}
+
+                        {!isRecording && !previewUrl && isReplayMode && (
+                            <div className="flex justify-center flex-col items-center mt-4">
+                                <p className="text-amber-400/80 text-sm font-medium mb-2">Flashback Mode Active</p>
+                                <button
+                                    onClick={() => { setIsReplayMode(false); setReplayBufferActive(false); }}
+                                    className="text-xs text-slate-500 hover:text-white flex items-center gap-2 transition-colors"
+                                >
+                                    <X className="w-3 h-3" /> Exit Flashback
+                                </button>
+                            </div>
+                        )}
 
                         {/* Saved Clips Library */}
                         {

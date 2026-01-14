@@ -34,7 +34,6 @@ function createWindow() {
     autoHideMenuBar: true,
     backgroundColor: '#0f172a',
     frame: false, // Custom UI
-    titleBarStyle: 'hidden', // This helps with some drag behaviors
     icon: path.join(__dirname, app.isPackaged ? 'dist/icon.png' : 'public/icon.png')
   });
 
@@ -97,15 +96,27 @@ function createWindow() {
       await fs.promises.writeFile(tempInput, Buffer.from(arrayBuffer));
 
       // Run FFmpeg
+      // We explicitly re-encode to fix "gapped" WebM files from MediaRecorder
+      // using realtime deadline for speed.
       await new Promise((resolve, reject) => {
         ffmpeg(tempInput)
-          .setStartTime(startTime)
+          .setStartTime(startTime) // Input seeking (fast)
           .setDuration(duration)
           .output(tempOutput)
-          .videoCodec('copy')
-          .audioCodec('copy')
+          .videoCodec('libvpx-vp9')
+          .padding(0) // Ensure no extra padding
+          .inputOptions(['-ignore_unknown'])
+          .outputOptions([
+            '-deadline realtime',
+            '-cpu-used 5', // Speed up VP9 encoding layout
+            '-bufsize 1000k'
+          ])
+          .audioCodec('copy') // Audio copy is usually fine, or usage 'libvorbis'
           .on('end', resolve)
-          .on('error', reject)
+          .on('error', (err) => {
+            console.error("FFmpeg error:", err);
+            reject(err);
+          })
           .run();
       });
 
@@ -124,6 +135,29 @@ function createWindow() {
       if (fs.existsSync(tempInput)) fs.unlink(tempInput, () => { });
       if (fs.existsSync(tempOutput)) fs.unlink(tempOutput, () => { });
       throw error;
+    }
+  });
+
+  ipcMain.handle('SAVE_IMAGE', async (event, { dataUrl, filename }) => {
+    try {
+      const base64Data = dataUrl.replace(/^data:image\/png;base64,/, "");
+      const releaseDir = path.join(app.getPath('userData'), 'Screenshots');
+      if (!fs.existsSync(releaseDir)) {
+        fs.mkdirSync(releaseDir, { recursive: true });
+      }
+
+      // Save to user documents or a predictable place? 
+      // Let's us app.getPath('pictures') usually.
+      const targetDir = path.join(app.getPath('pictures'), 'Capframe');
+      if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
+
+      const finalPath = path.join(targetDir, filename || `Screenshot-${Date.now()}.png`);
+
+      await fs.promises.writeFile(finalPath, base64Data, 'base64');
+      return finalPath;
+    } catch (e) {
+      console.error("Save Image Error:", e);
+      throw e;
     }
   });
 
