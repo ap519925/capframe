@@ -1120,11 +1120,29 @@ function App() {
 
             // Set canvas size based on crop or full screen
             if (cropRect) {
+                // Get the video track settings to understand the video dimensions
+                const settings = screenStream.getVideoTracks()[0].getSettings();
+                const videoDisplayWidth = settings.width || video.videoWidth;
+                const videoDisplayHeight = settings.height || video.videoHeight;
+
+                // Calculate scale factors to map screen coordinates to video coordinates
+                const scaleX = video.videoWidth / videoDisplayWidth;
+                const scaleY = video.videoHeight / videoDisplayHeight;
+
+                // Map screen coordinates to video coordinates
+                const srcX = cropRect.x * scaleX;
+                const srcY = cropRect.y * scaleY;
+                const srcW = cropRect.width * scaleX;
+                const srcH = cropRect.height * scaleY;
+
                 canvas.width = cropRect.width;
                 canvas.height = cropRect.height;
+
+                console.log(`Screenshot crop: screen(${cropRect.x},${cropRect.y},${cropRect.width},${cropRect.height}) -> video(${srcX},${srcY},${srcW},${srcH})`);
+
                 ctx.drawImage(
                     video,
-                    cropRect.x, cropRect.y, cropRect.width, cropRect.height,
+                    srcX, srcY, srcW, srcH,
                     0, 0, canvas.width, canvas.height
                 );
             } else {
@@ -1141,13 +1159,22 @@ function App() {
             document.body.removeChild(video);
 
             // Save the screenshot
+            console.log("Attempting to save screenshot...");
             if (window.electronAPI && window.electronAPI.saveImage) {
-                const filename = `Screenshot-${new Date().toISOString().replace(/:/g, '-')}.png`;
-                const filepath = await window.electronAPI.saveImage(dataUrl, filename);
-                setTrimMessage(`Screenshot saved to ${filepath}`);
-                setTimeout(() => setTrimMessage(null), 3000);
+                try {
+                    const filename = `Screenshot-${new Date().toISOString().replace(/:/g, '-')}.png`;
+                    console.log(`Saving screenshot as: ${filename}`);
+                    const filepath = await window.electronAPI.saveImage(dataUrl, filename);
+                    console.log(`Screenshot saved successfully to: ${filepath}`);
+                    setTrimMessage(`Screenshot saved!`);
+                    setTimeout(() => setTrimMessage(null), 3000);
+                } catch (saveErr) {
+                    console.error("Error saving screenshot via Electron API:", saveErr);
+                    setError("Failed to save screenshot: " + saveErr.message);
+                }
             } else {
                 // Fallback: trigger download
+                console.log("Electron API not available, using browser download");
                 const a = document.createElement('a');
                 a.href = dataUrl;
                 a.download = `Screenshot-${new Date().toISOString().replace(/:/g, '-')}.png`;
@@ -1655,6 +1682,14 @@ function App() {
                             error && (
                                 <div className="text-center text-red-400 text-sm bg-red-500/10 p-3 rounded-lg border border-red-500/20">
                                     {error}
+                                </div>
+                            )
+                        }
+
+                        {
+                            !error && trimMessage && !isReplayMode && !suggestedTrim && (
+                                <div className="text-center text-emerald-400 text-sm bg-emerald-500/10 p-3 rounded-lg border border-emerald-500/20 animate-in fade-in">
+                                    {trimMessage}
                                 </div>
                             )
                         }
